@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="220" viewBox="0 0 900 220" fill="none">
+  <g stroke="#000000" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <!-- left circle: slightly smaller and a little irregular -->
+    <path d="M 183 111
+             C 183 87, 203 77, 225 79
+             C 245 80, 258 94, 259 114
+             C 260 134, 248 149, 226 150
+             C 204 151, 186 141, 184 120
+             C 182 116, 182 113, 183 111 Z"/>
+
+    <!-- middle circle: slightly larger, more rounded but hand-drawn -->
+    <path d="M 338 108
+             C 338 82, 359 71, 383 73
+             C 406 75, 420 91, 421 114
+             C 421 138, 406 155, 382 156
+             C 358 157, 340 146, 339 122
+             C 338 117, 338 112, 338 108 Z"/>
+
+    <!-- right circle: slightly flatter and a bit smaller -->
+    <path d="M 492 111
+             C 492 89, 510 80, 533 82
+             C 554 83, 568 94, 569 114
+             C 570 133, 558 146, 534 147
+             C 510 148, 495 139, 494 120
+             C 493 117, 492 114, 492 111 Z"/>
+  </g>
+</svg>

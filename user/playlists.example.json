@@ -1,0 +1,14 @@
+[
+  {
+    "title": "Song Name",
+    "artist": "Artist Name",
+    "album": "",
+    "duration": ""
+  },
+  {
+    "title": "歌曲名",
+    "artist": "歌手",
+    "album": "专辑",
+    "duration": ""
+  }
+]

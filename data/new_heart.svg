@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="900" viewBox="0 0 1000 900" fill="none">
+  <defs>
+    <clipPath id="heartClip">
+      <path d="M505 742
+               C478 706 444 666 407 625
+               C326 535 221 424 209 307
+               C198 199 270 128 366 142
+               C420 150 468 187 505 245
+               C545 183 599 145 660 139
+               C760 130 834 198 829 309
+               C823 421 725 531 645 624
+               C595 682 548 733 520 777
+               C514 787 510 790 505 742 Z"/>
+    </clipPath>
+    <filter id="slightRoughen">
+      <feTurbulence type="fractalNoise" baseFrequency="0.018" numOctaves="2" seed="7" result="noise"/>
+      <feDisplacementMap in="SourceGraphic" in2="noise" scale="2.2" xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#slightRoughen)">
+    <!-- deep hand-painted fill -->
+    <path d="M505 742
+             C478 706 444 666 407 625
+             C326 535 221 424 209 307
+             C198 199 270 128 366 142
+             C420 150 468 187 505 245
+             C545 183 599 145 660 139
+             C760 130 834 198 829 309
+             C823 421 725 531 645 624
+             C595 682 548 733 520 777
+             C514 787 510 790 505 742 Z"
+          fill="#8F0508"/>
+
+    <!-- painterly brush texture clipped inside -->
+    <g clip-path="url(#heartClip)" opacity="0.45" stroke-linecap="round" fill="none">
+      <path d="M290 250 C380 188 490 216 565 304 C630 379 663 498 604 653" stroke="#6F0307" stroke-width="13" opacity="0.42"/>
+      <path d="M260 326 C365 250 507 262 604 374 C685 468 663 575 574 710" stroke="#B20A0D" stroke-width="9" opacity="0.35"/>
+      <path d="M320 190 C430 218 518 321 553 438 C586 548 557 657 504 742" stroke="#7B0206" stroke-width="11" opacity="0.38"/>
+      <path d="M673 190 C590 222 527 313 498 421 C467 538 476 648 511 762" stroke="#A5070A" stroke-width="10" opacity="0.32"/>
+      <path d="M760 260 C660 255 568 323 525 435 C486 539 489 646 516 746" stroke="#650205" stroke-width="8" opacity="0.30"/>
+      <path d="M245 388 C345 420 424 497 469 591 C498 652 510 711 506 768" stroke="#B71114" stroke-width="7" opacity="0.25"/>
+      <path d="M785 382 C688 407 602 488 554 594 C525 658 511 719 508 773" stroke="#7A0307" stroke-width="8" opacity="0.28"/>
+      <path d="M335 560 C413 570 484 612 543 684" stroke="#A20A0E" stroke-width="8" opacity="0.28"/>
+      <path d="M625 240 C690 210 763 230 792 294" stroke="#B10B0F" stroke-width="7" opacity="0.25"/>
+      <path d="M280 228 C338 196 415 203 470 254" stroke="#740306" stroke-width="7" opacity="0.28"/>
+    </g>
+
+    <!-- black hand-drawn outline -->
+    <path d="M505 742
+             C478 706 444 666 407 625
+             C326 535 221 424 209 307
+             C198 199 270 128 366 142
+             C420 150 468 187 505 245
+             C545 183 599 145 660 139
+             C760 130 834 198 829 309
+             C823 421 725 531 645 624
+             C595 682 548 733 520 777
+             C514 787 510 790 505 742 Z"
+          stroke="#FFFFFF" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

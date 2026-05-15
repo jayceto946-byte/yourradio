@@ -1,0 +1,42 @@
+# dependencies / build
+node_modules/
+.next/
+tsconfig.tsbuildinfo
+
+# env
+.env
+.env.local
+.env.*.local
+
+# local user library
+user/playlists.json
+musiclibrary.csv
+
+# runtime state / database
+data/radio-state.json
+data/radio.sqlite
+data/radio.sqlite-*
+data/discovery-cache.json
+data/hourly-chime/
+data/player/
+data/logs/
+data/*.log
+
+# generated audio / local prebuilt DJ assets
+data/tts-cache/
+data/prebuilt-tts/
+
+# python
+__pycache__/
+*.pyc
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+# local planning / generated reports
+reports/
+
+# local agent notes
+AGENTS.md
