@@ -45,6 +45,7 @@ npm run dev:clean
 在 `.env.local` 中配置：
 
 ```env
+MUSIC_API_BASE_URL=https://your-music-api.example.com/api.php
 MUSIC_PROVIDER_ORDER=netease,spotify,apple
 MUSIC_BITRATE=320
 LASTFM_API_KEY=your_lastfm_api_key_here
@@ -57,6 +58,8 @@ LLM_MODEL=your_model_name_here
 `LLM_PROVIDER=openai_compatible` 适用于支持 OpenAI 风格 `/chat/completions` 的服务。若你仍使用 DeepSeek，并希望保留其专用请求参数，可改为 `LLM_PROVIDER=deepseek`。旧的 `DEEPSEEK_*` 环境变量仍会被兼容读取，但新配置优先。
 
 Last.fm 只作为音乐信息 Provider，不提供播放 URL。最终播放仍必须经过 `MUSIC_PROVIDER_ORDER` 中的音乐 API 匹配并确认有 `audioUrl`。
+
+`MUSIC_API_BASE_URL` 用于配置你自己的音乐 API 地址。当前接入层期望该 API 支持 `types=search`、`types=url` 和 `types=pic` 这类查询参数。
 
 ## 导入基础歌单
 
