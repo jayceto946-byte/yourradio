@@ -1,6 +1,11 @@
 # Personal AI Radio
 
 Windows 本地个人 AI 电台。前端使用 Next.js + TypeScript，播放源使用你自己的音乐 API，音乐信息推荐主路径使用 Last.fm，LLM 只负责串场文案和解释，不负责凭空编歌。
+## 页面示例
+包含深色/米色两种风格，对应做了小屏适配。
+<img width="2560" height="1390" alt="image" src="https://github.com/user-attachments/assets/5f35b01a-ad12-4879-8d9b-70a8dfc40490" />
+<img width="2560" height="1390" alt="image" src="https://github.com/user-attachments/assets/69f25daa-0283-4b04-b123-3d609198d0fa" />
+
 
 
 ## 入门前准备
