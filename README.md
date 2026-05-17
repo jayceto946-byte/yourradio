@@ -10,15 +10,17 @@ Windows 本地个人 AI 电台。前端使用 Next.js + TypeScript，播放源�
 1. **Last.fm API**  
    推荐系统会使用 Last.fm 提供的音乐信息。你需要先注册一个 Last.fm 账号，并在这里创建 API Key：  
    `https://www.last.fm/api/account/create`
+   相较于中文歌，英文歌推荐范围更深更广，效果相对更好。
 
 2. **TTS 服务**  
-   项目当前用于测试和默认演示的方案是 **Qwen3-TTS 0.6B CustomVoice**。你也可以自行接入其他 TTS 服务，但不同模型在音色、中文表现、延迟和稳定性上的实际效果，项目无法统一保证。
+   配置受限，项目当前用于测试和默认演示的方案是 **Qwen3-TTS 0.6B CustomVoice**，使用开源音色"Serena”。
+   可以自行接入其他 TTS 服务，但不同模型在音色、中文表现、延迟和稳定性上的实际效果尚未得到广泛测试。
 
-3. **原始歌单**  
+4. **原始歌单**  
    如果你需要先从音乐平台导出自己的歌单，可以使用开源项目 **Go Music** 获取原始歌单，再导入到 YourRadio：  
    `https://music.unmeta.cn/`
 
-4. **可播放音源**  
+5. **可播放音源**  
    项目不内置、也不分发任何音源。请自行准备可用的音乐 API 或播放源，并按环境变量配置接入；Last.fm 只提供音乐信息，不提供最终播放链接。
 
 ## 运行
@@ -122,7 +124,7 @@ ENABLE_DEBUG_ROUTES=true
 默认 TTS 路线已经切到官方 Qwen3-TTS 本地 HTTP 服务：
 
 ```text
-qwen3_custom_voice / Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice / Vivian / cuda + float32
+qwen3_custom_voice / Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice / Serena / cuda + float32
 ```
 
 YourRadio 不会在 Next.js 进程里加载模型，也不会自动启动 Python 服务。请先单独启动本地服务：
@@ -152,9 +154,6 @@ npm run test:tts:qwen3
 ```
 
 如果当前 TTS Provider 不可用，YourRadio 会直接无串场播放下一首，不会阻塞音乐播放。
-
-
-
 
 
 
