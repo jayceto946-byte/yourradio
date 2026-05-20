@@ -1,4 +1,5 @@
-﻿import type { DjScriptMode } from "./selectDjScriptMode";
+import { FALLBACK_DJ_SCRIPTS } from "./fallbackDjScripts";
+import type { DjScriptMode } from "./selectDjScriptMode";
 
 export function buildFallbackDjScript(input: {
   speechTitle: string;
@@ -9,28 +10,29 @@ export function buildFallbackDjScript(input: {
 }) {
   const templates: Record<DjScriptMode, string[]> = {
     standalone_intro: [
-      `${input.displayArtist} 的《${input.speechTitle}》。不多铺垫，让声音自己慢慢展开，适合把注意力放回耳朵里。`,
-      `这里放一首 ${input.displayArtist}。这首《${input.speechTitle}》不用讲得太满，留一点空间给旋律就好。`
+      `${input.displayArtist} \u7684\u300a${input.speechTitle}\u300b\u3002\u4e0d\u591a\u94fa\u57ab\uff0c\u8ba9\u58f0\u97f3\u81ea\u5df1\u6162\u6162\u5c55\u5f00\u3002`,
+      `\u8fd9\u91cc\u653e\u4e00\u9996 ${input.displayArtist} \u7684\u300a${input.speechTitle}\u300b\u3002\u5148\u628a\u89e3\u91ca\u653e\u8f7b\u3002`
     ],
     mood_note: [
-      `这首的氛围不用说满，情绪贴近${input.timeOfDay}里安静下来的那一段，声音不抢，留白也够。`,
-      `把音量留在舒服的位置。接下来这段更轻一点，不急着往前走，适合让注意力慢慢落下来。`
+      `\u8fd9\u9996\u7684\u60c5\u7eea\u8d34\u8fd1${input.timeOfDay}\u91cc\u5b89\u9759\u4e0b\u6765\u7684\u90a3\u4e00\u6bb5\uff0c\u58f0\u97f3\u4e0d\u62a2\u3002`,
+      "\u628a\u97f3\u91cf\u7559\u5728\u8212\u670d\u7684\u4f4d\u7f6e\u3002\u63a5\u4e0b\u6765\u8fd9\u6bb5\u66f4\u8f7b\u4e00\u70b9\u3002"
     ],
     song_fact: [
-      `${input.displayArtist} 的《${input.speechTitle}》。资料点到为止，真正值得听的还是它进来之后那一点呼吸感。`,
-      `关于这首歌，知道一点背景就够了。现在先把说明放轻，听 ${input.displayArtist} 的《${input.speechTitle}》。`
+      `${input.displayArtist} \u7684\u300a${input.speechTitle}\u300b\u3002\u5148\u542c\u5b83\u8fdb\u6765\u7684\u90a3\u4e00\u70b9\u547c\u5438\u611f\u3002`,
+      `\u73b0\u5728\u542c ${input.displayArtist} \u7684\u300a${input.speechTitle}\u300b\u3002\u628a\u58f0\u97f3\u653e\u5230\u524d\u9762\u3002`
     ],
     soft_transition: [
-      `刚才的余温不用接得太满，这里轻轻换一个角度。${input.displayArtist} 的《${input.speechTitle}》，让频道继续往前。`,
-      `这一段转场不硬切，只把情绪放低一点。现在听 ${input.displayArtist} 的《${input.speechTitle}》。`
+      `\u521a\u624d\u7684\u4f59\u6e29\u8fd8\u5728\uff0c\u8fd9\u91cc\u8f7b\u8f7b\u6362\u4e00\u4e2a\u89d2\u5ea6\u3002${input.displayArtist} \u7684\u300a${input.speechTitle}\u300b\u3002`,
+      `\u8fd9\u4e00\u6bb5\u8f6c\u573a\u4e0d\u786c\u5207\u3002\u73b0\u5728\u542c ${input.displayArtist} \u7684\u300a${input.speechTitle}\u300b\u3002`
     ],
     direct_play: [
-      `不多介绍，把声音留给它自己。${input.displayArtist} 的《${input.speechTitle}》。`,
-      `话收短一点。${input.displayArtist}，《${input.speechTitle}》。`
+      `\u4e0d\u591a\u4ecb\u7ecd\uff0c\u628a\u58f0\u97f3\u7559\u7ed9\u5b83\u81ea\u5df1\u3002${input.displayArtist} \u7684\u300a${input.speechTitle}\u300b\u3002`,
+      `\u8bdd\u6536\u77ed\u4e00\u70b9\u3002${input.displayArtist}\uff0c\u300a${input.speechTitle}\u300b\u3002`,
+      ...FALLBACK_DJ_SCRIPTS.normal
     ],
     personal_taste_note: [
-      `这一首靠近你常停留的那种克制感，但不用讲成理由。${input.displayArtist} 的《${input.speechTitle}》，直接听。`,
-      `这里选一首更贴近私人频道气质的声音。${input.displayArtist} 的《${input.speechTitle}》，慢慢进来。`
+      `\u8fd9\u4e00\u9996\u9760\u8fd1\u4f60\u5e38\u505c\u7559\u7684\u90a3\u79cd\u514b\u5236\u611f\u3002${input.displayArtist} \u7684\u300a${input.speechTitle}\u300b\u3002`,
+      `\u8fd9\u91cc\u9009\u4e00\u9996\u66f4\u8d34\u8fd1\u79c1\u4eba\u9891\u9053\u6c14\u8d28\u7684\u58f0\u97f3\u3002${input.displayArtist} \u7684\u300a${input.speechTitle}\u300b\u3002`
     ]
   };
   const pool = templates[input.mode] ?? templates.mood_note;

@@ -1,4 +1,4 @@
-﻿import { readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fetchWithTimeout } from "./fetchWithTimeout";
 import type { DjContextDebug, DjScript, RadioState, Song, SourceSeed } from "./types";
@@ -11,7 +11,12 @@ import { stableJsonStringify } from "../src/lib/llm/stableJson";
 import { buildFallbackDjScript } from "../src/lib/dj/fallbackDjScript";
 import { detectBannedDjInternalPhrase, sanitizeRecommendationReason } from "../src/lib/dj/djScriptSanitizer";
 import { selectDjScriptMode, type DjScriptMode } from "../src/lib/dj/selectDjScriptMode";
+import { buildTrackContextPack } from "../src/lib/knowledge/buildTrackContextPack";
+import { selectDjScriptMode as selectKnowledgeDjScriptMode } from "../src/lib/knowledge/knowledgeCardGenerator";
+import { saveDjScriptMemory } from "../src/lib/knowledge/knowledgeStore";
+import type { TrackContextPack, DjScriptMode as KnowledgeDjScriptMode } from "../src/lib/knowledge/knowledgeTypes";
 import { buildLlmRequestBody, LLM_CONFIG } from "./llmConfig";
+import { loadLikedSongs, type LikedSongEntry } from "./likedSongs";
 
 const LLM_TIMEOUT_MS = 8000;
 const SONG_RESEARCH_TIMEOUT_MS = 3000;
@@ -32,7 +37,7 @@ const DJ_SCRIPT_BANNED_OVERUSED_OPENERS = [
   "下一首"
 ];
 
-type DjScene = "opening" | "normal" | "after_skip" | "after_like";
+type DjScene = "opening" | "normal" | "after_skip" | "after_like" | "requested";
 
 type GenerateDjLineOptions = {
   sourceSeed?: SourceSeed;
@@ -83,62 +88,14 @@ type LastDjScriptDebug = {
 
 let lastDjScriptDebug: LastDjScriptDebug | null = null;
 
-type TemplateInput = {
-  song: Song;
-  speechTitle: string;
-  displayArtist: string;
-  time: string;
-  previous: string;
-  seed: string;
-  reason: string;
-  facts: SongFact[];
-};
-
-const fallbackTemplates = [
-  ({ speechTitle, displayArtist, facts }: TemplateInput) => {
-    const album = facts.find((fact) => fact.type === "album");
-    return album
-      ? `这版资料里，它被放在专辑线索里。稍微留意一下 ${displayArtist} 的《${speechTitle}》，别急着判断，让声音自己把空间打开。`
-      : `把灯光再压低一点。${displayArtist} 的《${speechTitle}》来了，让它先铺开，再决定要不要靠近。`;
-  },
-  ({ speechTitle, displayArtist, previous }: TemplateInput) => previous
-    ? `从《${previous}》出来，情绪不用立刻转弯。这里接上 ${displayArtist} 的《${speechTitle}》，像把频道轻轻调到另一格。`
-    : `先不做太重的介绍，${displayArtist} 的《${speechTitle}》。今晚的电台，从这一下呼吸开始。`,
-  ({ speechTitle, displayArtist, seed }: TemplateInput) => seed
-    ? `这次的入口来自你的歌单线索「${seed}」。往外走一步，落到 ${displayArtist} 的《${speechTitle}》，熟悉感还在，但边界更松。`
-    : `这里换一个角度听。${displayArtist} 的《${speechTitle}》，不抢戏，只把节奏往前送一点。`,
-  ({ speechTitle, displayArtist, time }: TemplateInput) => `${time}适合一点克制的过渡。${displayArtist} 的《${speechTitle}》不需要被大声介绍，放出来就好。`,
-  ({ speechTitle, displayArtist, reason }: TemplateInput) => reason
-    ? `推荐器挑中它，是因为这条线索和你最近的收听很近。${displayArtist}，《${speechTitle}》，听听它怎么接住前面的余温。`
-    : `现在把话收短一点。${displayArtist} 的《${speechTitle}》，让旋律自己把夜里的纹理带出来。`,
-  ({ speechTitle, displayArtist, facts }: TemplateInput) => facts.some((fact) => fact.type === "soundtrack")
-    ? `这首的资料里带着原声线索，所以别把它只当普通单曲听。${displayArtist} 的《${speechTitle}》，画面感会慢慢浮上来。`
-    : `有些歌适合从侧面进入。${displayArtist} 的《${speechTitle}》，不急着亮相，先让低处的情绪往上走。`,
-  ({ speechTitle, displayArtist, previous }: TemplateInput) => previous
-    ? `刚才的尾音还没完全散开，先别切得太硬。${displayArtist} 的《${speechTitle}》，会把这一段接得更柔软。`
-    : `频道稳定下来之后，放一首不需要解释太多的歌。${displayArtist}，《${speechTitle}》。`,
-  ({ speechTitle, displayArtist, time }: TemplateInput) => `在这个${time}，我更想放一首能留白的歌。${displayArtist} 的《${speechTitle}》，让注意力慢慢落回声音本身。`,
-  ({ speechTitle, displayArtist, seed }: TemplateInput) => seed
-    ? `从「${seed}」延伸出来的不是复刻，而是一点相邻的气味。接下来听 ${displayArtist} 的《${speechTitle}》。`
-    : `这一首不往热闹里推。${displayArtist} 的《${speechTitle}》，让频道继续保持流动。`,
-  ({ speechTitle, displayArtist }: TemplateInput) => `留一小段空白给耳朵。${displayArtist} 的《${speechTitle}》马上进来，像夜里慢慢亮起的一盏灯。`,
-  ({ speechTitle, displayArtist, facts }: TemplateInput) => {
-    const fact = facts.find((entry) => entry.type === "album" || entry.type === "metadata");
-    return fact
-      ? `我只取一个可靠线索：${fact.text.replace(/。$/, "")}。现在听 ${displayArtist} 的《${speechTitle}》，把资料放轻，声音放前。`
-      : `不用把它说成一个故事。${displayArtist} 的《${speechTitle}》，更适合直接进入，让情绪自己完成转场。`;
-  },
-  ({ speechTitle, displayArtist, previous }: TemplateInput) => previous
-    ? `上一首留下的是一条细线，这里不用剪断。${displayArtist} 的《${speechTitle}》，顺着那条线继续往前。`
-    : `现在轮到 ${displayArtist}。这首《${speechTitle}》，适合把频道调得更私人一点。`
-];
-
 export async function generateDjLine(song: Song, options: GenerateDjLineOptions = {}): Promise<DjScript> {
   const taste = await loadTaste();
   const debugContext = buildDebugContext(options.radioState, taste.loaded);
   const speech = formatTrackForSpeech({ title: song.title, artist: song.artist, album: song.album });
   const research = await researchWithTimeout(song, options, speech);
   const facts = research.facts.slice(0, 5);
+  const contextPack = await buildDjTrackContextPack(song, options, speech, research);
+  const knowledgeMode = selectKnowledgeDjScriptMode(contextPack);
   const mode = selectDjScriptMode({
     factsCount: facts.length,
     hasHighConfidenceFact: facts.some((fact) => fact.confidence >= 0.68),
@@ -151,7 +108,7 @@ export async function generateDjLine(song: Song, options: GenerateDjLineOptions 
     return buildFallback(song, options, debugContext, "missing_api_key", speech, facts, mode, research);
   }
 
-  const messages = buildDjMessages(song, options, taste.content, debugContext, speech, research, mode);
+  const messages = buildDjMessages(song, options, taste.content, debugContext, speech, research, mode, contextPack, knowledgeMode);
 
   try {
     const first = await requestDeepSeek(messages);
@@ -178,12 +135,14 @@ function buildDjMessages(
   debug: DjContextDebug,
   speech: ReturnType<typeof formatTrackForSpeech>,
   research: SongResearchResult,
-  mode: DjScriptMode
+  mode: DjScriptMode,
+  contextPack: TrackContextPack,
+  knowledgeMode: KnowledgeDjScriptMode
 ): DeepSeekMessage[] {
   return [
     { role: "system", content: DJ_SYSTEM_PROMPT },
     { role: "user", content: DJ_TASK_INSTRUCTION },
-    { role: "user", content: stableJsonStringify(buildDjPayload(song, options, taste, debug, speech, research, mode)) }
+    { role: "user", content: stableJsonStringify(buildDjPayload(song, options, taste, debug, speech, research, mode, contextPack, knowledgeMode)) }
   ];
 }
 
@@ -194,13 +153,16 @@ function buildDjPayload(
   debug: DjContextDebug,
   speech: ReturnType<typeof formatTrackForSpeech>,
   research: SongResearchResult,
-  mode: DjScriptMode
+  mode: DjScriptMode,
+  contextPack: TrackContextPack,
+  knowledgeMode: KnowledgeDjScriptMode
 ) {
   const previous = mode === "soft_transition" ? options.previousTrack : undefined;
   return {
+    trackContextPack: compactTrackContextPack(contextPack),
+    scriptMode: knowledgeMode,
     facts: research.facts.slice(0, 5).map((fact) => ({
       confidence: fact.confidence,
-      sourceName: fact.sourceName,
       text: fact.text,
       type: fact.type
     })),
@@ -218,17 +180,208 @@ function buildDjPayload(
     mode,
     recommendationReason: sanitizeDjRecommendationReason(options.reason),
     research: {
-      providers: research.usedProviders,
-      triggerReasons: research.triggerReasons ?? [],
-      wikiSearched: research.wikiSearched
+      confidence: contextPack.confidence,
+      hasTrackCard: Boolean(contextPack.knowledge.trackCard),
+      hasAlbumCard: Boolean(contextPack.knowledge.albumCard),
+      hasArtistCard: Boolean(contextPack.knowledge.artistCard)
     },
     scene: options.scene ?? "normal",
     scoreExplanation: sanitizeDjRecommendationReason(options.reason),
     seedContext: buildSeedContext(options.sourceSeed),
     sourceSeed: undefined,
-    taste: taste ? taste.slice(0, 900) : "未提供 taste.md",
+    taste: taste ? taste.slice(0, 900) : "taste not provided",
     timeOfDay: debug.timeOfDay
   };
+}
+async function buildDjTrackContextPack(
+  song: Song,
+  options: GenerateDjLineOptions,
+  speech: ReturnType<typeof formatTrackForSpeech>,
+  research: SongResearchResult
+) {
+  const likedContext = await buildLikedSongContext(song, speech);
+
+  return buildTrackContextPack({
+    track: {
+      title: speech.speechTitle,
+      artist: speech.displayArtist,
+      album: song.album
+    },
+    recommendation: {
+      seedTrack: options.sourceSeed?.title,
+      seedArtist: options.sourceSeed?.artist,
+      reason: sanitizeDjRecommendationReason(options.reason),
+      sourcePath: undefined,
+      likedContext,
+      tags: research.facts
+        .filter((fact) => fact.type === "metadata")
+        .map((fact) => fact.text)
+        .slice(0, 3)
+    },
+    listeningContext: {
+      previousTrack: options.previousTrack ? { title: options.previousTrack.title, artist: options.previousTrack.artist } : undefined,
+      position: options.scene === "opening" ? "opening" : options.scene === "requested" ? "requested" : "normal",
+      userAction: options.scene === "after_like" ? "like_style" : options.scene === "after_skip" ? "skip_downrank" : "none"
+    }
+  });
+}
+
+async function buildLikedSongContext(song: Song, speech: ReturnType<typeof formatTrackForSpeech>) {
+  const likedSongs = await loadLikedSongs().catch(() => []);
+  if (!likedSongs.length) return undefined;
+
+  const currentTitle = speech.speechTitle || song.title;
+  const currentArtist = speech.displayArtist || song.artist;
+  const currentAlbum = song.album ?? "";
+
+  const sameArtist = likedSongs
+    .filter((entry) => isSameArtist(entry.artist, currentArtist))
+    .filter((entry) => !isSameTrack(entry, currentTitle, currentArtist))
+    .slice(0, 3)
+    .map(toLikedContextItem);
+
+  const sameAlbum = likedSongs
+    .filter((entry) => Boolean(currentAlbum) && isSameArtist(entry.artist, currentArtist) && isSameAlbum(entry.album, currentAlbum))
+    .filter((entry) => !isSameTrack(entry, currentTitle, currentArtist))
+    .slice(0, 3)
+    .map(toLikedContextItem);
+
+  if (!sameArtist.length && !sameAlbum.length) return undefined;
+
+  return {
+    sameArtist,
+    sameAlbum,
+    summary: [
+      sameAlbum.length ? "listener_liked_same_album_before" : undefined,
+      sameArtist.length ? "listener_liked_same_artist_before" : undefined
+    ].filter(Boolean).join(";")
+  };
+}
+
+function toLikedContextItem(entry: LikedSongEntry) {
+  return {
+    title: entry.title,
+    artist: entry.artist,
+    album: entry.album || undefined,
+    likedAt: entry.likedAt,
+    feedbackAction: entry.feedbackAction
+  };
+}
+
+function compactLikedContext(context: TrackContextPack["recommendation"]["likedContext"]) {
+  if (!context) return undefined;
+  return {
+    summary: context.summary,
+    sameArtist: context.sameArtist?.slice(0, 2).map(compactLikedContextItem),
+    sameAlbum: context.sameAlbum?.slice(0, 2).map(compactLikedContextItem)
+  };
+}
+
+function compactLikedContextItem(item: { title: string; artist: string; album?: string; feedbackAction?: "like" | "like_style" }) {
+  return {
+    title: item.title,
+    artist: item.artist,
+    album: item.album,
+    feedbackAction: item.feedbackAction
+  };
+}
+
+function isSameTrack(entry: LikedSongEntry, title: string, artist: string) {
+  return normalizeForMention(entry.title) === normalizeForMention(title) && isSameArtist(entry.artist, artist);
+}
+
+function isSameArtist(left: string, right: string) {
+  const a = normalizeForMention(left);
+  const b = normalizeForMention(right);
+  return Boolean(a && b && (a === b || a.includes(b) || b.includes(a)));
+}
+
+function isSameAlbum(left: string, right: string) {
+  const a = normalizeForMention(left);
+  const b = normalizeForMention(right);
+  return Boolean(a && b && a === b);
+}
+
+function compactTrackContextPack(context: TrackContextPack) {
+  return {
+    track: context.track,
+    recommendation: {
+      seedTrack: context.recommendation.seedTrack,
+      seedArtist: context.recommendation.seedArtist,
+      sourcePath: context.recommendation.sourcePath,
+      reason: context.recommendation.reason,
+      likedContext: compactLikedContext(context.recommendation.likedContext),
+      tags: context.recommendation.tags?.slice(0, 5),
+      similarTo: context.recommendation.similarTo?.slice(0, 3)
+    },
+    knowledge: {
+      trackCard: context.knowledge.trackCard ? compactTrackCard(context.knowledge.trackCard) : undefined,
+      albumCard: context.knowledge.albumCard ? compactAlbumCard(context.knowledge.albumCard) : undefined,
+      artistCard: context.knowledge.artistCard ? compactArtistCard(context.knowledge.artistCard) : undefined,
+      scriptMemory: context.knowledge.scriptMemory && context.knowledge.scriptMemory.userFeedback !== "bad"
+        ? { script: context.knowledge.scriptMemory.script, mode: context.knowledge.scriptMemory.mode, userFeedback: context.knowledge.scriptMemory.userFeedback }
+        : undefined
+    },
+    listeningContext: context.listeningContext,
+    confidence: context.confidence
+  };
+}
+
+function compactTrackCard(card: NonNullable<TrackContextPack["knowledge"]["trackCard"]>) {
+  return {
+    title: card.title,
+    artist: card.artist,
+    album: card.album,
+    tags: card.tags?.slice(0, 5),
+    summary: card.summary,
+    lyricTheme: card.lyricTheme,
+    moodWords: card.moodWords?.slice(0, 5),
+    djAngles: card.djAngles?.slice(0, 3),
+    confidence: card.confidence
+  };
+}
+
+function compactAlbumCard(card: NonNullable<TrackContextPack["knowledge"]["albumCard"]>) {
+  return {
+    album: card.album,
+    artist: card.artist,
+    year: card.year,
+    tags: card.tags?.slice(0, 5),
+    summary: card.summary,
+    moodWords: card.moodWords?.slice(0, 5),
+    djAngles: card.djAngles?.slice(0, 3),
+    confidence: card.confidence
+  };
+}
+
+function compactArtistCard(card: NonNullable<TrackContextPack["knowledge"]["artistCard"]>) {
+  return {
+    artist: card.artist,
+    tags: card.tags?.slice(0, 5),
+    shortBio: card.shortBio,
+    moodWords: card.moodWords?.slice(0, 5),
+    knownFor: card.knownFor?.slice(0, 4),
+    confidence: card.confidence
+  };
+}
+
+function rememberDjScript(song: Song, speech: ReturnType<typeof formatTrackForSpeech>, line: string, mode: DjScriptMode) {
+  saveDjScriptMemory({
+    trackTitle: speech.speechTitle,
+    artist: speech.displayArtist,
+    album: song.album,
+    script: line,
+    mode: mapMemoryMode(mode),
+    userFeedback: "neutral"
+  }).catch(() => undefined);
+}
+
+function mapMemoryMode(mode: DjScriptMode): KnowledgeDjScriptMode {
+  if (mode === "song_fact") return "album_context";
+  if (mode === "soft_transition") return "soft_transition";
+  if (mode === "direct_play") return "direct_play";
+  if (mode === "personal_taste_note") return "queue_reason";
+  return "mood_note";
 }
 async function requestDeepSeek(messages: DeepSeekMessage[]) {
   const response = await fetchWithTimeout(LLM_CONFIG.apiUrl, {
@@ -316,6 +469,7 @@ function buildLlmResult(
       style: mode
     }
   };
+  rememberDjScript(song, speech, result.text, mode);
   setLastDjScriptDebug(song, speech, research, result.text, usedFactTypes, "llm", mode, false);
   return result;
 }
@@ -517,7 +671,7 @@ async function researchWithTimeout(song: Song, options: GenerateDjLineOptions, s
         rawArtist: song.artist,
         displayArtist: speech.displayArtist,
         album: song.album,
-        recommendationReason: options.reason,
+        recommendationReason: sanitizeDjRecommendationReason(options.reason),
         prepareTimeBudgetMs: timeoutMs,
         isSoundtrackLike: speech.isSoundtrackLike,
         featuredArtists: speech.featuredArtists

@@ -4,15 +4,20 @@ import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 
-const ALLOWED_ICONS = new Set(["heart", "ellipsis"]);
+const ICON_FILES: Record<string, string> = {
+  heart: "new_heart.svg",
+  ellipsis: "ellipsis.svg",
+  search: "search_icon.svg",
+  "search-white": "search_icon_white.svg"
+};
 
 export async function GET(_request: Request, { params }: { params: Promise<{ name: string }> }) {
   const { name } = await params;
-  if (!ALLOWED_ICONS.has(name)) {
+  const fileName = ICON_FILES[name];
+  if (!fileName) {
     return NextResponse.json({ ok: false, error: "icon_not_found" }, { status: 404 });
   }
 
-  const fileName = name === "heart" ? "new_heart.svg" : `${name}.svg`;
   const iconPath = path.join(process.cwd(), "data", fileName);
   if (!existsSync(iconPath)) {
     return NextResponse.json({ ok: false, error: "icon_not_found" }, { status: 404 });

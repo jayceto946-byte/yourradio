@@ -48,12 +48,12 @@ export async function GET(request: Request) {
     }
 
     if (mode === "prepare") {
-      item = await consumeBestRollingQueueItem({ requireTts: true });
+      item = await consumeBestRollingQueueItem({ requireScript: true });
       if (item) source = "rolling_queue";
       void refillRollingQueue({ allowTts: true }).catch((cause) => console.error("[rollingQueue] refill failed", cause));
       if (!item) {
         void recordRuntimeEvent({ step: "api.next", status: "info", durationMs: Math.round(performance.now() - startedAt), context: { mode, scene, source: "not_ready" } });
-        return NextResponse.json({ ok: false, code: "NOT_READY", message: "Next track TTS is still preparing." }, { status: 202 });
+        return NextResponse.json({ ok: false, code: "NOT_READY", message: "Next track script is still preparing." }, { status: 202 });
       }
     } else {
       item = await consumeBestRollingQueueItem();

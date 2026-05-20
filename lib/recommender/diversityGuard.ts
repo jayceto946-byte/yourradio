@@ -45,15 +45,19 @@ export type DiversityGuardOutput = {
 };
 
 export const DIVERSITY_GUARD_CONFIG = {
-  recentArtistWindow: 5,
+  recentArtistWindow: 10,
+  hardRecentArtistWindow: 5,
   recentAlbumWindow: 10,
   queueArtistWindow: 3,
-  sameArtistRecentPenalty: 1.8,
+  sameArtistRecentPenalty: 3.2,
+  sameArtistHardRecentPenalty: 6.5,
+  sameArtistRepeatPenalty: 1.4,
   sameAlbumRecentPenalty: 1.0,
-  sameArtistInQueuePenalty: 1.25,
+  sameArtistInQueuePenalty: 3.6,
   sameSeedClusterPenalty: 0.75,
   sameSourcePathOverusePenalty: 1.0,
-  artistOverfitPenalty: 1.35,
+  artistOverfitPenalty: 3.0,
+  maxArtistFrequencyInRecentWindow: 0.2,
   similarTrackDifferentArtistBonus: 0.45,
   explorationBonus: 0.32,
   newArtistBonus: 0.22,
@@ -69,6 +73,7 @@ export function applyDiversityGuard(input: DiversityGuardInput): DiversityGuardO
   const config = { ...DIVERSITY_GUARD_CONFIG, ...(input.config ?? {}) };
   const recent = input.radioState.playHistory ?? [];
   const recentArtists = recent.slice(-config.recentArtistWindow).map((entry) => normalize(entry.artist));
+  const hardRecentArtists = recent.slice(-config.hardRecentArtistWindow).map((entry) => normalize(entry.artist));
   const recentAlbums = recent.slice(-config.recentAlbumWindow).map((entry) => normalizeAlbum(entry.album, entry.artist));
   const recentSourcePaths = recent.slice(-config.recentArtistWindow).flatMap((entry) => entry.sourcePaths ?? []);
   const queueArtists = (input.currentQueue ?? [])
@@ -102,7 +107,15 @@ export function applyDiversityGuard(input: DiversityGuardInput): DiversityGuardO
       bonusesApplied.push({ candidateId: entry.score.trackId, candidate: display(entry), artist: candidate.playableTrack.artist, bonusType, amount, reason });
     }
 
-    if (artist && recentArtists.includes(artist)) penalty("sameArtistRecentPenalty", config.sameArtistRecentPenalty, "artist appeared in recent playback window");
+    const recentArtistCount = artist ? recentArtists.filter((value) => value === artist).length : 0;
+    if (artist && hardRecentArtists.includes(artist)) {
+      penalty("sameArtistHardRecentPenalty", config.sameArtistHardRecentPenalty, "artist appeared in the last five played tracks");
+    } else if (artist && recentArtists.includes(artist)) {
+      penalty("sameArtistRecentPenalty", config.sameArtistRecentPenalty, "artist appeared in the last ten played tracks");
+    }
+    if (recentArtistCount >= 2) {
+      penalty("sameArtistRepeatPenalty", config.sameArtistRepeatPenalty * (recentArtistCount - 1), "artist repeated within the recent ten-track window");
+    }
     if (album && recentAlbums.includes(album)) penalty("sameAlbumRecentPenalty", config.sameAlbumRecentPenalty, "album appeared in recent playback window");
     if (artist && queueArtists.filter((value) => value === artist).length >= config.maxSameArtistInQueue) penalty("sameArtistInQueuePenalty", config.sameArtistInQueuePenalty, "artist is already represented in the rolling queue");
     if (album && queueAlbums.filter((value) => value === album).length >= config.maxSameAlbumInQueue) penalty("sameAlbumInQueuePenalty", config.sameAlbumRecentPenalty, "album is already represented in the rolling queue");
@@ -113,9 +126,9 @@ export function applyDiversityGuard(input: DiversityGuardInput): DiversityGuardO
       penalty("sameSourcePathOverusePenalty", config.sameSourcePathOverusePenalty, "same-artist source path was used too often recently");
     }
 
-    const artistRecentFrequency = recent.slice(-20).filter((entry) => normalize(entry.artist) === artist).length / Math.max(1, Math.min(20, recent.length));
+    const artistRecentFrequency = recentArtistCount / Math.max(1, Math.min(config.recentArtistWindow, recent.length));
     const queueFrequency = queueArtists.filter((value) => value === artist).length / Math.max(1, queueArtists.length || 1);
-    if (artist && Math.max(artistRecentFrequency, queueFrequency) > 0.25) penalty("artistOverfitPenalty", config.artistOverfitPenalty, "artist frequency is too high in recent playback or future queue");
+    if (artist && Math.max(artistRecentFrequency, queueFrequency) > config.maxArtistFrequencyInRecentWindow) penalty("artistOverfitPenalty", config.artistOverfitPenalty, "artist frequency is too high in recent playback or future queue");
 
     if (sourceKind === "similar_track_different_artist") bonus("similarTrackDifferentArtistBonus", config.similarTrackDifferentArtistBonus, "similar-track result points to a different artist");
     if (sourceKind === "random_exploration" || sourceKind === "similar_artist_representative") bonus("explorationBonus", config.explorationBonus, "candidate keeps the queue moving outward");

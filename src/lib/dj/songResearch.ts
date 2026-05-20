@@ -2,13 +2,18 @@
 import type { SongFact, SongResearchResult } from "./songFacts";
 import { computePopularityScore } from "./songPopularity";
 import { searchWikiSongInfo } from "./WikiSongInfoProvider";
+import { getLastfmTrackInfoFacts } from "../providers/LastfmInfoProvider";
+import { updateKnowledgeCardsFromFacts } from "../knowledge/knowledgeCardGenerator";
 
 export const SONG_RESEARCH_CONFIG = {
   enabled: true,
   wikiEnabled: process.env.WIKI_SEARCH_ENABLED !== "false",
+  lastfmInfoEnabled: process.env.LASTFM_TRACK_INFO_ENABLED !== "false",
+  lastfmInfoMaxLatencyMs: Number(process.env.LASTFM_TRACK_INFO_MAX_LATENCY_MS ?? 1600),
   wikiMaxLatencyMs: Number(process.env.WIKI_MAX_LATENCY_MS ?? 1800),
   maxTotalResearchLatencyMs: 3000,
   chineseTrackWikiMaxLatencyMs: 1200,
+  chineseTrackLastfmInfoMaxLatencyMs: 1100,
   chineseTrackMaxTotalResearchLatencyMs: 2200,
   maxFactsPassedToLLM: 6,
   minHighConfidenceWikiFacts: 2,
@@ -64,10 +69,12 @@ export async function researchSongFacts(input: {
       usedProviders: safeJson<string[]>(cached.provider_names_json, []),
       searched: Boolean(cached.searched),
       wikiSearched: Boolean(cached.wiki_searched),
+      lastfmSearched: safeJson<string[]>(cached.provider_names_json, []).includes("lastfm"),
       cached: true,
       latencyMs: Math.round(performance.now() - startedAt),
       queries: [],
       wikiQueries: [],
+      lastfmQueries: [],
       triggerReasons: ["cache_hit"],
       errors: safeJson<string[]>(cached.errors_json ?? "[]", []),
       researchStatus: "success",
@@ -84,9 +91,37 @@ export async function researchSongFacts(input: {
   const isChineseTrack = chinesePattern.test(`${input.rawTitle} ${input.rawArtist}`);
   const lowCoverageChineseCandidate = CHINESE_TRACK_FALLBACK_CONFIG.enabled && isChineseTrack && (input.lastfmSimilarTrackCount ?? 0) < CHINESE_TRACK_FALLBACK_CONFIG.minLastfmSimilarTracks;
   const wikiTimeoutMs = lowCoverageChineseCandidate ? SONG_RESEARCH_CONFIG.chineseTrackWikiMaxLatencyMs : SONG_RESEARCH_CONFIG.wikiMaxLatencyMs;
+  const lastfmTimeoutMs = lowCoverageChineseCandidate ? SONG_RESEARCH_CONFIG.chineseTrackLastfmInfoMaxLatencyMs : SONG_RESEARCH_CONFIG.lastfmInfoMaxLatencyMs;
   const isSoundtrack = Boolean(input.isSoundtrackLike) || soundtrackHints.test(`${input.rawTitle} ${input.album ?? ""}`);
   let wikiSearched = false;
+  let lastfmSearched = false;
   let wikiQueries: string[] = [];
+  let lastfmQueries: string[] = [];
+
+  if (SONG_RESEARCH_CONFIG.enabled && SONG_RESEARCH_CONFIG.lastfmInfoEnabled && prepareTimeBudgetMs >= lastfmTimeoutMs) {
+    triggerReasons.push("lastfm_track_info_enabled");
+    lastfmSearched = true;
+    const lastfm = await getLastfmTrackInfoFacts({
+      rawTitle: input.rawTitle,
+      speechTitle: input.speechTitle,
+      rawArtist: input.rawArtist,
+      displayArtist: input.displayArtist,
+      timeoutMs: lastfmTimeoutMs
+    });
+    lastfmQueries = lastfm.usedVariants;
+    usedProviders.push("lastfm");
+    if (lastfm.ok) {
+      facts.push(...lastfm.facts);
+      if (lastfm.facts.length) {
+        triggerReasons.push("lastfm_track_info_returned_facts");
+      } else {
+        triggerReasons.push("lastfm_track_info_no_facts");
+      }
+    } else {
+      errors.push(`lastfm:${lastfm.error ?? "track_info_error"}`);
+      triggerReasons.push("lastfm_track_info_failed");
+    }
+  }
 
   if (SONG_RESEARCH_CONFIG.enabled && SONG_RESEARCH_CONFIG.wikiEnabled && prepareTimeBudgetMs >= wikiTimeoutMs) {
     triggerReasons.push("wiki_enabled");
@@ -133,7 +168,7 @@ export async function researchSongFacts(input: {
     album: input.album,
     facts: finalFacts,
     providerNames: [...new Set(usedProviders)],
-    searched: wikiSearched,
+    searched: wikiSearched || lastfmSearched,
     wikiSearched,
     errors,
     expiresAt: addDays(errors.length && !finalFacts.length ? SONG_RESEARCH_CONFIG.failureCacheTtlDays : SONG_RESEARCH_CONFIG.cacheTtlDays)
@@ -145,13 +180,15 @@ export async function researchSongFacts(input: {
     album: input.album,
     facts: finalFacts,
     usedProviders: [...new Set(usedProviders)],
-    searched: wikiSearched,
+    searched: wikiSearched || lastfmSearched,
     wikiSearched,
+    lastfmSearched,
     cached: false,
     latencyMs: Math.round(performance.now() - startedAt),
     popularityScore,
-    queries: [...wikiQueries],
+    queries: [...lastfmQueries, ...wikiQueries],
     wikiQueries,
+    lastfmQueries,
     triggerReasons: [...new Set(triggerReasons)],
     errors,
     researchStatus: lowCoverageChineseCandidate && countHighConfidence(finalFacts) < CHINESE_TRACK_FALLBACK_CONFIG.minHighConfidenceFacts ? "fallback" : finalFacts.length ? "success" : errors.length ? "fallback" : "success",

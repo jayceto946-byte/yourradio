@@ -7,7 +7,7 @@ import { pickNextTrack, pickPlayableBaseLibraryTrack } from "../../../../lib/que
 import { loadRadioState } from "../../../../lib/radioState";
 import { measureRuntimeStep, recordRuntimeEvent } from "../../../../lib/runtimeLog";
 import { prepareDjTts } from "../../../../lib/tts";
-import type { RadioNextResponse } from "../../../../lib/types";
+import type { RadioNextResponse, Song } from "../../../../lib/types";
 import { ROLLING_QUEUE_TARGETS, WARMUP_CONFIG, type RollingQueueSlot, type RollingQueueSnapshot, type WarmupPackage } from "./queueTypes";
 
 const PLAYER_DIR = path.join(process.cwd(), "data", "player");
@@ -82,10 +82,14 @@ async function doRefillRollingQueue(options: { allowTts?: boolean }) {
   }
 }
 
-export async function consumeBestRollingQueueItem(options: { requireTts?: boolean } = {}) {
+export async function consumeBestRollingQueueItem(options: { requireTts?: boolean; requireScript?: boolean } = {}) {
   const snapshot = await loadRollingQueueSnapshot();
   const queue = removeStaleAndPlayed(snapshot.queue);
-  const allowed = options.requireTts ? ["tts_ready"] : ["tts_ready", "script_ready", "track_ready"];
+  const allowed = options.requireTts
+    ? ["tts_ready"]
+    : options.requireScript
+      ? ["tts_ready", "script_ready"]
+      : ["tts_ready", "script_ready", "track_ready"];
 
   while (true) {
     const index = queue.findIndex((slot) => slot.item && allowed.includes(slot.status));
@@ -181,6 +185,63 @@ export async function buildImmediateRadioItem(input: { scene: "opening" | "norma
   return item;
 }
 
+export async function enqueueRequestedRadioItem(input: { track: Song; requestText: string; providerTried: string[]; selectedProvider: string; score: number; keywords: string[] }) {
+  const state = await loadRadioState();
+  const sourceSeed = { title: input.track.title, artist: input.track.artist, album: input.track.album };
+  const dj = await measureRuntimeStep("dj.generateRequestedLine", { track: input.track.title + " - " + input.track.artist }, () => generateDjLine(input.track, {
+    sourceSeed,
+    searchQuery: input.keywords[0] ?? input.requestText,
+    reason: "User requested: " + input.requestText,
+    scene: "requested",
+    radioState: state
+  }));
+
+  const item: RadioNextResponse = {
+    track: {
+      id: input.track.id,
+      title: input.track.title,
+      artist: input.track.artist,
+      album: input.track.album,
+      durationSec: input.track.durationSeconds,
+      coverUrl: input.track.coverUrl ?? "",
+      audioUrl: input.track.audioUrl
+    },
+    djLine: dj.text,
+    ttsUrl: null,
+    ttsSkipped: false,
+    searchQuery: input.keywords[0] ?? input.requestText,
+    searchStrategy: "requested",
+    tasteKeywordsUsed: ["user_request"],
+    sourceSeed,
+    reason: "User requested: " + input.requestText,
+    fallbackUsed: false,
+    liveFilteredCount: 0,
+    livePenaltyApplied: false,
+    providerTried: input.providerTried,
+    selectedProvider: input.selectedProvider,
+    candidateDebug: [{ title: input.track.title, artist: input.track.artist, provider: input.selectedProvider, score: input.score, rejectedReasons: [] }],
+    fallbackReason: null,
+    djContextDebug: dj.debug,
+    discovery: {
+      source: "manual",
+      searchIntent: "user_request",
+      queriesUsed: input.keywords,
+      candidateSongs: [{ title: input.track.title, artist: input.track.artist, source: input.selectedProvider, confidence: "high" }]
+    },
+    rankerSourcePaths: ["user_request"],
+    rankerScore: input.score
+  };
+
+  const snapshot = await loadRollingQueueSnapshot();
+  const queue = removeStaleAndPlayed(snapshot.queue).filter((slot) => queueTrackKey(slot) !== radioItemTrackKey(item));
+  const slot = makeSlot("script_ready", item);
+  slot.sourceRunId = "user-request-" + Date.now();
+  queue.unshift(slot);
+  const saved = await saveRollingQueueSnapshot({ ...snapshot, queue: reindex(queue).slice(0, ROLLING_QUEUE_TARGETS.maxQueueLength), refillRunning: false });
+  void recordRuntimeEvent({ step: "requestSong.enqueue", status: "success", context: { track: item.track.title + " - " + item.track.artist, selectedProvider: input.selectedProvider, score: input.score } });
+  void refillRollingQueue({ allowTts: true, force: true }).catch((cause) => console.error("[requestSong] refill failed", cause));
+  return { item, snapshot: saved };
+}
 export async function loadWarmupPackage() {
   try {
     const raw = await readFile(WARMUP_PATH, "utf8");
@@ -207,7 +268,7 @@ export async function consumeWarmupPackage() {
 }
 
 export async function saveWarmupPackageFromItem(item: RadioNextResponse, sourceRunId = `warmup-${Date.now()}`) {
-  if (!item.track.audioUrl || !item.ttsUrl) return null;
+  if (!item.track.audioUrl || !item.djLine?.trim()) return null;
   if (item.djContextDebug?.style === "soft_transition") return null;
   if (!await isQueueItemPlayable(item, "warmup_save")) return null;
   const now = new Date();
@@ -233,9 +294,10 @@ export async function saveWarmupPackageFromItem(item: RadioNextResponse, sourceR
 export async function saveWarmupPackageFromQueue(sourceRunId = `warmup-queue-${Date.now()}`) {
   const snapshot = await loadRollingQueueSnapshot();
   const queue = removeStaleAndPlayed(snapshot.queue);
-  const slot = queue.find((entry) => entry.status === "tts_ready" && entry.item?.ttsUrl && !entry.stale);
+  const slot = queue.find((entry) => entry.status === "tts_ready" && entry.item?.ttsUrl && entry.item.djLine?.trim() && !entry.stale)
+    ?? queue.find((entry) => entry.status === "script_ready" && entry.item?.djLine?.trim() && !entry.stale);
   if (!slot?.item) {
-    void recordRuntimeEvent({ step: "warmup.save", status: "error", error: "no_tts_ready_queue_item", context: { sourceRunId } });
+    void recordRuntimeEvent({ step: "warmup.save", status: "error", error: "no_script_ready_queue_item", context: { sourceRunId } });
     return null;
   }
   return saveWarmupPackageFromItem(slot.item, slot.sourceRunId ?? sourceRunId);
@@ -253,8 +315,8 @@ export async function invalidateWarmupPackage(reason: string) {
 }
 
 async function promoteFirstScriptReadyToTts(snapshot: RollingQueueSnapshot) {
-  if (snapshot.queue.some((slot) => slot.status === "tts_ready" && slot.item?.ttsUrl)) return snapshot;
-  const slot = snapshot.queue.find((entry) => entry.status === "script_ready" && entry.item && !entry.locked && !entry.stale);
+  const firstTtsReadyIndex = snapshot.queue.findIndex((entry) => entry.status === "tts_ready" && entry.item?.ttsUrl);
+  const slot = snapshot.queue.find((entry, index) => entry.status === "script_ready" && entry.item && !entry.locked && !entry.stale && (firstTtsReadyIndex < 0 || index < firstTtsReadyIndex || entry.sourceRunId?.startsWith("user-request")));
   if (!slot?.item) return snapshot;
   snapshot.workers = { ...snapshot.workers, TtsWorker: "running" };
   await saveRollingQueueSnapshot(snapshot);

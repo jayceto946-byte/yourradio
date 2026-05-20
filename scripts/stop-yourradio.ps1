@@ -25,7 +25,7 @@ function Add-ProjectNodeProcessIds {
   param([string]$Root)
   try {
     $escapedRoot = [regex]::Escape($Root)
-    $processes = Get-CimInstance Win32_Process | Where-Object {
+    $processes = Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
       ($_.Name -like "node*" -or $_.Name -like "npm*" -or $_.CommandLine -match "next") -and
       ($_.CommandLine -match $escapedRoot -or $_.CommandLine -match "next[/\\]dist[/\\]bin[/\\]next" -or $_.CommandLine -match "next dev")
     }

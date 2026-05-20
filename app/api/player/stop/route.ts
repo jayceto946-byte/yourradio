@@ -32,7 +32,7 @@ export async function POST() {
     durationMs: Math.round(performance.now() - startedAt),
     context: { warmupSaved: false, refillStarted: true }
   });
-  return NextResponse.json({ ok: true, warmupSaved: false, refillStarted: true, message: "No tts_ready queue item yet; background refill started." });
+  return NextResponse.json({ ok: true, warmupSaved: false, refillStarted: true, message: "No script_ready queue item yet; background refill started." });
 }
 
 function summarizeWarmup(pkg: Awaited<ReturnType<typeof saveWarmupPackageFromQueue>>) {

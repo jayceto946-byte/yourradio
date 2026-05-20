@@ -1,4 +1,4 @@
-﻿import type { RadioState } from "../types";
+import type { RadioState } from "../types";
 import type { TasteProfile } from "../taste";
 import { explainScore } from "./explainScore";
 import { DEFAULT_RECOMMENDER_WEIGHTS, SOURCE_PATH_WEIGHTS, type RecommenderWeights } from "./weights";
@@ -278,10 +278,16 @@ function computeRecentlySkippedPenalty(candidate: PlayableCandidate, state: Radi
 
 function computeSameArtistOverusePenalty(artist: string, state: RadioState): number {
   const normalized = normalizeArtist(artist);
-  const count = state.playHistory.slice(-RECENCY_WINDOWS.recentPlaysForArtistWindow).filter((entry) => normalizeArtist(entry.artist) === normalized).length;
-  if (count <= 1) return 0;
-  if (count === 2) return 0.35;
-  return 0.8;
+  if (!normalized) return 0;
+
+  const recent = state.playHistory.slice(-RECENCY_WINDOWS.recentPlaysForArtistWindow);
+  const reversedIndex = [...recent].reverse().findIndex((entry) => normalizeArtist(entry.artist) === normalized);
+  const count = recent.filter((entry) => normalizeArtist(entry.artist) === normalized).length;
+
+  if (reversedIndex >= 0 && reversedIndex < 5) return 1.0;
+  if (reversedIndex >= 0) return 0.65;
+  if (count >= 2) return 0.8;
+  return 0;
 }
 
 function computeOverplayedTagPenalty(candidateTags: string[], recentTagStats: Record<string, number>): number {
@@ -358,5 +364,3 @@ function clamp01(value: number) {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(1, value));
 }
-
-

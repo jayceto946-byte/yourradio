@@ -5,6 +5,19 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+$EnvFile = Join-Path $ProjectRoot ".env.local"
+if (Test-Path -LiteralPath $EnvFile) {
+  Get-Content -LiteralPath $EnvFile | ForEach-Object {
+    $line = $_.Trim()
+    if (-not $line -or $line.StartsWith("#") -or -not $line.Contains("=")) { return }
+    $parts = $line.Split("=", 2)
+    $name = $parts[0].Trim()
+    $value = $parts[1].Trim().Trim('"').Trim("'")
+    if ($name -and -not (Test-Path "Env:$name")) {
+      Set-Item -Path "Env:$name" -Value $value
+    }
+  }
+}
 if (-not $PythonPath) { $PythonPath = $env:QWEN3_TTS_PYTHON_PATH }
 if (-not $PythonPath) {
   $pythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue

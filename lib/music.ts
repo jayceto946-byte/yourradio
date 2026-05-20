@@ -8,7 +8,11 @@ const MUSIC_BITRATE = process.env.MUSIC_BITRATE ?? "320";
 const MUSIC_SEARCH_PAGE = "1";
 const MUSIC_TIMEOUT_MS = 3500;
 const AUDIO_URL_VALIDATE_TIMEOUT_MS = Number(process.env.MUSIC_AUDIO_VALIDATE_TIMEOUT_MS ?? 2500);
+const COVER_URL_VALIDATE_TIMEOUT_MS = Number(process.env.MUSIC_COVER_VALIDATE_TIMEOUT_MS ?? 2000);
 const VALIDATE_AUDIO_URLS = process.env.MUSIC_VALIDATE_AUDIO_URLS !== "false";
+const COVER_FALLBACK_ENABLED = process.env.MUSIC_COVER_FALLBACK_ENABLED !== "false";
+const COVER_FALLBACK_PROVIDER = process.env.MUSIC_COVER_FALLBACK_PROVIDER ?? "kuwo";
+const COVER_FALLBACK_MIN_SCORE = Number(process.env.MUSIC_COVER_FALLBACK_MIN_SCORE ?? 90);
 
 const providerCapabilities: Record<string, { canSearch: boolean; canPlay: boolean; requiresAuth: boolean }> = {
   netease: { canSearch: true, canPlay: true, requiresAuth: false },
@@ -75,21 +79,7 @@ export async function searchSongsByProvider(provider: MusicProviderName, query: 
   }
 
   const limit = Math.min(query.limit ?? 10, 8);
-  const url = buildApiUrl({
-    types: "search",
-    source: provider,
-    name: query.keyword,
-    count: String(limit),
-    pages: MUSIC_SEARCH_PAGE
-  });
-  const response = await fetchWithTimeout(url, { cache: "no-store" }, MUSIC_TIMEOUT_MS);
-
-  if (!response.ok) {
-    throw new Error(`Music provider ${provider} returned ${response.status}`);
-  }
-
-  const data = await response.json();
-  const items = normalizeMusicApiResult(data);
+  const items = await searchRawItemsByProvider(provider, query.keyword, limit);
   const songs = await Promise.all(items.slice(0, limit).map((item) => toSong(provider, item)));
   return songs.filter((song) => Boolean(song.audioUrl));
 }
@@ -110,6 +100,21 @@ export function normalizeMusicApiResult(data: unknown): MusicApiSearchItem[] {
   return [];
 }
 
+async function searchRawItemsByProvider(provider: string, keyword: string, limit: number): Promise<MusicApiSearchItem[]> {
+  const url = buildApiUrl({
+    types: "search",
+    source: provider,
+    name: keyword,
+    count: String(limit),
+    pages: MUSIC_SEARCH_PAGE
+  });
+  const response = await fetchWithTimeout(url, { cache: "no-store" }, MUSIC_TIMEOUT_MS);
+  if (!response.ok) {
+    throw new Error(`Music provider ${provider} returned ${response.status}`);
+  }
+  return normalizeMusicApiResult(await response.json());
+}
+
 function buildApiUrl(params: Record<string, string>) {
   const url = new URL(MUSIC_API_BASE_URL);
   Object.entries(params).forEach(([key, value]) => {
@@ -121,22 +126,103 @@ function buildApiUrl(params: Record<string, string>) {
 async function toSong(provider: string, item: MusicApiSearchItem): Promise<Song> {
   const id = String(item.id ?? "");
   const source = item.source ?? provider;
-  const [audioUrl, coverUrl] = await Promise.all([
+  const title = item.name ?? "Unknown Title";
+  const artist = formatArtist(item.artist);
+  const album = item.album ?? "Unknown Album";
+  const [audioUrl, directCoverUrl] = await Promise.all([
     getSongUrl(source, id),
     item.pic_id ? getCoverUrl(source, String(item.pic_id)) : Promise.resolve(undefined)
   ]);
+  const coverUrl = directCoverUrl || await getFallbackCoverUrl({ title, artist, album });
 
   return {
     id,
-    title: item.name ?? "Unknown Title",
-    artist: formatArtist(item.artist),
-    album: item.album ?? "Unknown Album",
+    title,
+    artist,
+    album,
     durationSeconds: 0,
     audioUrl,
     platform: source,
     coverUrl,
     lyricId: item.lyric_id ? String(item.lyric_id) : undefined
   };
+}
+
+async function getFallbackCoverUrl(target: { title: string; artist: string; album: string }): Promise<string | undefined> {
+  if (!COVER_FALLBACK_ENABLED || !COVER_FALLBACK_PROVIDER) return undefined;
+
+  try {
+    const queries = unique([`${target.title} ${target.artist}`, target.title]);
+    let best: { item: MusicApiSearchItem; score: number } | null = null;
+
+    for (const keyword of queries) {
+      const items = await searchRawItemsByProvider(COVER_FALLBACK_PROVIDER, keyword, 5).catch(() => []);
+      for (const item of items) {
+        if (!item.pic_id) continue;
+        const score = scoreCoverFallbackCandidate(item, target);
+        if (!best || score > best.score) best = { item, score };
+      }
+      if (best && best.score >= COVER_FALLBACK_MIN_SCORE) break;
+    }
+
+    if (!best || best.score < COVER_FALLBACK_MIN_SCORE || !best.item.pic_id) return undefined;
+    const coverUrl = await getCoverUrl(best.item.source ?? COVER_FALLBACK_PROVIDER, String(best.item.pic_id));
+    if (!coverUrl || !(await validateCoverImageUrl(coverUrl))) return undefined;
+
+    void recordRuntimeEvent({
+      step: "music.coverFallback",
+      status: "success",
+      context: {
+        provider: COVER_FALLBACK_PROVIDER,
+        title: target.title,
+        artist: target.artist,
+        matchedTitle: best.item.name ?? "",
+        matchedArtist: formatArtist(best.item.artist),
+        score: best.score
+      }
+    });
+    return coverUrl;
+  } catch (cause) {
+    void recordRuntimeEvent({
+      step: "music.coverFallback",
+      status: "error",
+      error: cause instanceof Error ? cause.message : "cover_fallback_failed",
+      context: { provider: COVER_FALLBACK_PROVIDER, title: target.title, artist: target.artist }
+    });
+    return undefined;
+  }
+}
+
+export function scoreCoverFallbackCandidate(item: MusicApiSearchItem, target: { title: string; artist: string; album: string }) {
+  if (!item.pic_id) return 0;
+  const title = normalizeCoverMatch(item.name ?? "");
+  const targetTitle = normalizeCoverMatch(target.title);
+  const artist = normalizeCoverMatch(formatArtist(item.artist));
+  const targetArtist = normalizeCoverMatch(target.artist);
+  const album = normalizeCoverMatch(item.album ?? "");
+  const targetAlbum = normalizeCoverMatch(target.album);
+  let score = 0;
+  if (title === targetTitle) score += 70;
+  else if (title.includes(targetTitle) || targetTitle.includes(title)) score += 35;
+  if (artist === targetArtist) score += 35;
+  else if (artist.includes(targetArtist) || targetArtist.includes(artist)) score += 18;
+  if (targetAlbum && album === targetAlbum) score += 10;
+  return score;
+}
+
+async function validateCoverImageUrl(coverUrl: string) {
+  if (!/^https?:\/\//i.test(coverUrl)) return false;
+  try {
+    const response = await fetchWithTimeout(coverUrl, {
+      method: "GET",
+      headers: { Range: "bytes=0-1" },
+      redirect: "follow",
+      cache: "no-store"
+    }, COVER_URL_VALIDATE_TIMEOUT_MS);
+    return (response.ok || response.status === 206) && (response.headers.get("content-type") ?? "").toLowerCase().startsWith("image/");
+  } catch {
+    return false;
+  }
 }
 
 async function getSongUrl(source: string, id: string): Promise<string> {
@@ -271,6 +357,14 @@ function formatArtist(artist: unknown): string {
   }
 
   return "Unknown Artist";
+}
+
+function normalizeCoverMatch(value: string) {
+  return value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+}
+
+function unique(values: string[]) {
+  return Array.from(new Set(values.filter(Boolean)));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

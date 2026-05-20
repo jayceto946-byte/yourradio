@@ -10,6 +10,7 @@ tsconfig.tsbuildinfo
 
 # local user library
 user/playlists.json
+user/liked-songs.json
 musiclibrary.csv
 
 # runtime state / database
@@ -18,6 +19,7 @@ data/radio.sqlite
 data/radio.sqlite-*
 data/discovery-cache.json
 data/hourly-chime/
+data/knowledge/
 data/player/
 data/logs/
 data/*.log

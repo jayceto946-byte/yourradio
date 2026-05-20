@@ -18,11 +18,23 @@ function Write-LocalLog([string]$Message) {
   Write-Host $Message
 }
 
+function Invoke-ProjectScript {
+  param([string]$ScriptPath, [string[]]$Arguments = @())
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ScriptPath @Arguments *>> $logPath
+  return $LASTEXITCODE
+}
+
 Write-LocalLog "Stopping Qwen3 TTS..."
-& (Join-Path $resolvedProjectRoot "scripts\stop-qwen3-tts.ps1") -Port $TtsPort *>> $logPath
+$stopTtsScript = Join-Path $resolvedProjectRoot "scripts\stop-qwen3-tts.ps1"
+$ttsExitCode = Invoke-ProjectScript -ScriptPath $stopTtsScript -Arguments @("-Port", "$TtsPort")
+Write-LocalLog "Qwen3 TTS stop exit code: $ttsExitCode"
 
 Start-Sleep -Seconds 1
 Write-LocalLog "Stopping YourRadio dev server..."
-& (Join-Path $resolvedProjectRoot "scripts\stop-yourradio.ps1") -Ports @(3000, $RadioPort) -ProjectRoot $resolvedProjectRoot *>> $logPath
+$stopRadioScript = Join-Path $resolvedProjectRoot "scripts\stop-yourradio.ps1"
+$radioExitCode = Invoke-ProjectScript -ScriptPath $stopRadioScript -Arguments @("-Ports", "3000", "$RadioPort", "-ProjectRoot", $resolvedProjectRoot)
+Write-LocalLog "YourRadio stop exit code: $radioExitCode"
 
 Write-LocalLog "Local radio shutdown completed."
+if ($ttsExitCode -ne 0 -or $radioExitCode -ne 0) { exit 1 }
+exit 0

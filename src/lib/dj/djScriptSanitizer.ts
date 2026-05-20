@@ -18,7 +18,17 @@
   "根据数据",
   "根据算法",
   "你的播放记录显示",
-  "从你的历史记录看"
+  "从你的历史记录看",
+  "\u8d44\u6599\u4e0d\u8db3",
+  "\u8d44\u6599\u4e0d\u591a",
+  "\u8d44\u6599\u70b9\u5230\u4e3a\u6b62",
+  "\u4e0d\u7528\u8bb2\u5f97\u592a\u6ee1",
+  "\u4e0d\u7528\u8bf4\u5f97\u592a\u6ee1",
+  "\u4e0d\u7528\u8bf4\u6ee1",
+  "\u6839\u636e\u7ebf\u7d22",
+  "\u8d44\u6599\u5361",
+  "\u7f13\u5b58",
+  "Tavily"
 ];
 
 export function detectBannedDjInternalPhrase(text: string) {

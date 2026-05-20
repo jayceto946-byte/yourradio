@@ -18,7 +18,7 @@ export async function GET() {
 export async function POST() {
   await refillRollingQueue({ allowTts: true, force: true });
   const pkg = await saveWarmupPackageFromQueue("debug_save_warmup");
-  if (!pkg) return NextResponse.json({ ok: false, error: "no_tts_ready_item" }, { status: 409 });
+  if (!pkg) return NextResponse.json({ ok: false, error: "no_script_ready_item" }, { status: 409 });
   return NextResponse.json({ ok: true, package: pkg });
 }
 

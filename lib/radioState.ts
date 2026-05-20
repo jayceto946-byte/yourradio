@@ -1,8 +1,9 @@
-﻿import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { FeedbackAction, RadioNextResponse, RadioState } from "./types";
 import { updateTasteProfileFromFeedback } from "./recommender/updateTasteProfileFromFeedback";
 import { DEFAULT_SOURCE_PATH_TRUST } from "./taste";
+import { recordLikedSong } from "./likedSongs";
 
 const STATE_PATH = path.join(process.cwd(), "data", "radio-state.json");
 const RECENT_LIMIT = 50;
@@ -101,6 +102,7 @@ export async function recordFeedback(action: FeedbackAction, item: RadioNextResp
     adjustWeight(state.keywordWeights, item.searchQuery, 0.8, 3);
     adjustWeight(state.keywordWeights, item.sourceSeed.title, 0.45, 3);
     updateTasteProfileFromFeedback({ state, item, event: action });
+    await recordLikedSong({ item, action, state }).catch(() => undefined);
   }
 
   state.lastFeedbackEvents = [{ action, trackId: item.track.id, title: item.track.title, artist: item.track.artist, createdAt: new Date().toISOString() }, ...(state.lastFeedbackEvents ?? [])].slice(0, 30);
@@ -167,5 +169,3 @@ function normalizeAdaptive(value: Record<string, unknown>) {
     weights: isRecord(value.weights) ? toNumberMap(value.weights) : {}
   };
 }
-
-

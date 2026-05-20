@@ -1,6 +1,6 @@
-"use client";
+﻿"use client";
 
-import { useEffect, useRef, useState, type ChangeEvent, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type CSSProperties, type FormEvent } from "react";
 import { computeDjToSongFadePlan, fadeVolume } from "@/lib/player/audioFade";
 import { clampVolume, computeEffectiveVolume } from "@/src/lib/player/audioVolume";
 import type { FeedbackAction, PlaylistSong, RadioNextResponse, RadioTrack, RecommendationFailure } from "@/lib/types";
@@ -21,6 +21,7 @@ type ActiveAudioType = "song" | "speech" | null;
 type TransitionReason = "song-ended" | "neutral-next" | "after_skip";
 type RecentTrackFeedback = "liked_style" | "changed";
 type AppTheme = "dark" | "ivory";
+type RequestSongUiStatus = "idle" | "loading" | "success" | "error";
 
 type HourlyChimePackage = {
   ok?: boolean;
@@ -69,7 +70,9 @@ const RECENT_UI_LIMIT = 20;
 const NEXT_TIMEOUT_MS = 150000;
 const FEEDBACK_TIMEOUT_MS = 5000;
 const PLAYLIST_IMPORT_TIMEOUT_MS = 15000;
+const REQUEST_SONG_TIMEOUT_MS = 60000;
 const PREPARE_END_WAIT_MS = 3000;
+const PREPARE_RETRY_AFTER_FAILURE_MS = 15000;
 const isDev = process.env.NODE_ENV === "development";
 const THEME_STORAGE_KEY = "yourradio:theme";
 
@@ -107,9 +110,9 @@ const PREBUILT_TTS = {
 type PrebuiltCueAction = "radio_start" | "radio_stop" | "change_track" | "skip_and_downrank";
 
 const prepareStatusText: Record<PrepareStatus, string> = {
-  not_ready: "未准备",
-  preparing: "正在准备下一首",
-  ready: "已准备"
+  not_ready: "\u672a\u51c6\u5907",
+  preparing: "\u6b63\u5728\u51c6\u5907\u4e0b\u4e00\u9996",
+  ready: "\u5df2\u51c6\u5907"
 };
 
 function debugLog(message: string, detail?: unknown) {
@@ -122,15 +125,15 @@ function perfLog(name: string, start: number) {
 
 function stateLabel(state: PlayerState) {
   const labels: Record<PlayerState, string> = {
-    idle: "待机",
-    preparing: "准备中",
-    speaking: "DJ 串场",
-    playing: "播放中",
-    preparing_next: "播放中 / 预备下一首",
-    transitioning: "切歌中",
-    paused: "已暂停",
-    stopped: "已停止",
-    error: "出错"
+    idle: "\u5f85\u673a",
+    preparing: "\u51c6\u5907\u4e2d",
+    speaking: "DJ \u4e32\u573a",
+    playing: "\u64ad\u653e\u4e2d",
+    preparing_next: "\u64ad\u653e\u4e2d / \u9884\u5907\u4e0b\u4e00\u9996",
+    transitioning: "\u5207\u6b4c\u4e2d",
+    paused: "\u5df2\u6682\u505c",
+    stopped: "\u5df2\u505c\u6b62",
+    error: "\u51fa\u9519"
   };
 
   return labels[state];
@@ -171,6 +174,12 @@ export default function Home() {
   const [playlistImportPreview, setPlaylistImportPreview] = useState<PlaylistImportPreview | null>(null);
   const [playlistImportPending, setPlaylistImportPending] = useState(false);
   const [playlistImportStatus, setPlaylistImportStatus] = useState("");
+  const [requestSongText, setRequestSongText] = useState("");
+  const [requestSongPending, setRequestSongPending] = useState(false);
+  const [requestSongStatus, setRequestSongStatus] = useState<RequestSongUiStatus>("idle");
+  const [isRequestSongOpen, setIsRequestSongOpen] = useState(false);
+  const [isToolMenuOpen, setIsToolMenuOpen] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<"idle" | "running" | "success" | "error">("idle");
 
   const songAudioRef = useRef<HTMLAudioElement | null>(null);
   const speechAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -182,6 +191,8 @@ export default function Home() {
   const pausedAudioTypeRef = useRef<ActiveAudioType>(null);
   const isPreparingNextRef = useRef(false);
   const hasPreparedForCurrentTrackRef = useRef(false);
+  const nextPrepareRetryAtRef = useRef(0);
+  const previousTtsOnlineRef = useRef<boolean | null>(null);
   const transitionLockRef = useRef(false);
   const isRadioActiveRef = useRef(false);
   const playerStateRef = useRef<PlayerState>("idle");
@@ -190,6 +201,10 @@ export default function Home() {
   const speechResolveRef = useRef<(() => void) | null>(null);
   const songFadeAbortRef = useRef<AbortController | null>(null);
   const songFadeInAbortRef = useRef<AbortController | null>(null);
+  const songAudioContextRef = useRef<AudioContext | null>(null);
+  const songMediaSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const songGainNodeRef = useRef<GainNode | null>(null);
+  const songWebAudioFadeTimerRef = useRef<number | null>(null);
   const audioFallbackAttemptsRef = useRef(new Set<string>());
   const songFadeOutStartedRef = useRef(false);
   const fadeTrackIdRef = useRef<string | null>(null);
@@ -234,6 +249,12 @@ export default function Home() {
   }, [feedbackStatus]);
 
   useEffect(() => {
+    if (requestSongStatus === "idle" || requestSongStatus === "loading") return;
+    const requestSongDismissTimer = window.setTimeout(() => setRequestSongStatus("idle"), 3000);
+    return () => window.clearTimeout(requestSongDismissTimer);
+  }, [requestSongStatus]);
+
+  useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
 
@@ -241,13 +262,17 @@ export default function Home() {
       try {
         const response = await fetch("/api/system/status", { cache: "no-store" });
         const data = await response.json();
-        if (!cancelled) setLocalServiceStatus(data);
+        if (!cancelled) {
+          setLocalServiceStatus(data);
+          handleTtsStatusRefresh(Boolean(data?.tts?.ok));
+        }
       } catch {
         if (!cancelled) {
           setLocalServiceStatus({
             server: { ok: false },
             tts: { ok: false, error: "status_check_failed" }
           });
+          handleTtsStatusRefresh(false);
         }
       } finally {
         if (!cancelled) timer = window.setTimeout(refresh, 5000);
@@ -318,7 +343,7 @@ export default function Home() {
       await startCue;
       await playRadioItem({ ...item, ttsSkipped: true }, transitionId);
     } catch (cause) {
-      handleError(cause, "启动失败：");
+      handleError(cause, "\u542f\u52a8\u5931\u8d25\uff1a");
     } finally {
       perfLog("startRadio", startedAt);
     }
@@ -338,6 +363,7 @@ export default function Home() {
     setSpeakingForItem(item);
     clearPreparedNext();
     hasPreparedForCurrentTrackRef.current = false;
+    nextPrepareRetryAtRef.current = 0;
     setPrepareStatus("not_ready");
     setError(null);
 
@@ -374,6 +400,18 @@ export default function Home() {
     setFeedbackPending(false);
   }
 
+  function handleTtsStatusRefresh(isOnline: boolean) {
+    const wasOnline = previousTtsOnlineRef.current;
+    previousTtsOnlineRef.current = isOnline;
+    if (!isOnline || wasOnline === true) return;
+    nextPrepareRetryAtRef.current = 0;
+    void logClientRuntimeEvent("tts.status", "info", { reason: "tts_recovered_trigger_prepare" });
+    if (activeAudioTypeRef.current === "song" && currentRef.current && !nextPreparedRef.current) {
+      hasPreparedForCurrentTrackRef.current = false;
+      void prepareNext();
+    }
+  }
+
   function triggerImmediateNextPreparation(reason: "song_started" | "song_audio_playing") {
     if (
       hasPreparedForCurrentTrackRef.current ||
@@ -399,6 +437,7 @@ export default function Home() {
 
   async function prepareNext() {
     if (isPreparingNextRef.current || hasPreparedForCurrentTrackRef.current || !isRadioActiveRef.current || transitionLockRef.current) return;
+    if (nextPrepareRetryAtRef.current && Date.now() < nextPrepareRetryAtRef.current) return;
 
     const prepareId = ++prepareIdRef.current;
     const startedAt = performance.now();
@@ -414,6 +453,7 @@ export default function Home() {
         debugLog("[prepareNext] ignored stale result", prepareId);
         return;
       }
+      nextPrepareRetryAtRef.current = 0;
       nextPreparedRef.current = item;
       setNextPreparedItem(item);
       setPrepareStatus("ready");
@@ -421,7 +461,10 @@ export default function Home() {
     } catch (cause) {
       debugLog("[prepareNext] failed", cause);
       clearPreparedNext();
+      hasPreparedForCurrentTrackRef.current = false;
+      nextPrepareRetryAtRef.current = Date.now() + PREPARE_RETRY_AFTER_FAILURE_MS;
       setPrepareStatus("not_ready");
+      void logClientRuntimeEvent("prepareNext.retry", "info", { retryAfterMs: PREPARE_RETRY_AFTER_FAILURE_MS, error: cause instanceof Error ? cause.message : String(cause) });
     } finally {
       isPreparingNextRef.current = false;
       if (activeAudioTypeRef.current === "song" && songAudioRef.current && !songAudioRef.current.paused) setState("playing");
@@ -453,7 +496,7 @@ export default function Home() {
       const next = prepared ?? (await fetchNextItem(undefined, reason === "after_skip" ? "after_skip" : undefined));
       await playRadioItem(next, transitionId);
     } catch (cause) {
-      handleError(cause, "切换失败：");
+      handleError(cause, "\u5207\u6362\u5931\u8d25\uff1a");
     } finally {
       if (isLatestTransition(transitionId)) transitionLockRef.current = false;
       perfLog(`transition:${reason}`, startedAt);
@@ -637,7 +680,7 @@ export default function Home() {
       if (pausedType === "song" && songAudioRef.current?.src) {
         activeAudioTypeRef.current = "song";
         setState("playing");
-        await songAudioRef.current.play().catch((cause) => handleError(cause, "继续播放失败："));
+        await songAudioRef.current.play().catch((cause) => handleError(cause, "\u7ee7\u7eed\u64ad\u653e\u5931\u8d25\uff1a"));
       }
       return;
     }
@@ -663,7 +706,7 @@ export default function Home() {
     if (changed) markRecentTrackFeedback(changed, "changed");
     markNextPlayedAsChangedRef.current = true;
     setFeedbackPending(true);
-    setFeedbackStatus("正在换一首，本次不计入负反馈。后台推荐生成中，页面不会等待请求完成。");
+    setFeedbackStatus("\u6b63\u5728\u6362\u4e00\u9996\uff0c\u672c\u6b21\u4e0d\u8ba1\u5165\u8d1f\u53cd\u9988\u3002\u540e\u53f0\u63a8\u8350\u751f\u6210\u4e2d\uff0c\u9875\u9762\u4e0d\u4f1a\u7b49\u5f85\u8bf7\u6c42\u5b8c\u6210\u3002");
     perfLog("right-control:neutral-next-click", startedAt);
     debugLog("[transition] neutral-next");
     void runNeutralNextInBackground();
@@ -673,7 +716,7 @@ export default function Home() {
     try {
       await transitionToPreparedOrFetchNext("neutral-next");
     } catch (cause) {
-      handleError(cause, "换歌失败：");
+      handleError(cause, "\u6362\u6b4c\u5931\u8d25\uff1a");
       setFeedbackPending(false);
     }
   }
@@ -684,7 +727,7 @@ export default function Home() {
     const skipped = currentRef.current?.track ?? speakingForRef.current?.track;
     markNextPlayedAsChangedRef.current = true;
     setFeedbackPending(true);
-    setFeedbackStatus("已降低当前歌曲/歌手的推荐权重，正在后台切换下一首。");
+    setFeedbackStatus("\u5df2\u964d\u4f4e\u5f53\u524d\u6b4c\u66f2/\u6b4c\u624b\u7684\u63a8\u8350\u6743\u91cd\uff0c\u6b63\u5728\u540e\u53f0\u5207\u6362\u4e0b\u4e00\u9996\u3002");
     perfLog("right-control:skip-click", startedAt);
     debugLog("[transition] skip");
     void runSkipInBackground(skipped);
@@ -692,11 +735,11 @@ export default function Home() {
 
   async function runSkipInBackground(skipped?: RadioTrack) {
     try {
-      void sendFeedback("skip").catch(() => setFeedbackStatus("反馈提交失败，但会继续切歌。"));
+      void sendFeedback("skip").catch(() => setFeedbackStatus("\u53cd\u9988\u63d0\u4ea4\u5931\u8d25\uff0c\u4f46\u4f1a\u7ee7\u7eed\u5207\u6b4c\u3002"));
       if (skipped) removeRecentTrack(skipped);
       await transitionToPreparedOrFetchNext("after_skip");
     } catch (cause) {
-      handleError(cause, "跳过失败：");
+      handleError(cause, "\u8df3\u8fc7\u5931\u8d25\uff1a");
       setFeedbackPending(false);
     }
   }
@@ -707,7 +750,7 @@ export default function Home() {
     const liked = currentRef.current?.track ?? speakingForRef.current?.track;
     if (liked) markRecentTrackFeedback(liked, "liked_style");
     setFeedbackPending(true);
-    setFeedbackStatus("已记录，会影响后续推荐；当前正在准备的下一首不会被打断。");
+    setFeedbackStatus("\u5df2\u8bb0\u5f55\uff0c\u4f1a\u5f71\u54cd\u540e\u7eed\u63a8\u8350\uff1b\u5f53\u524d\u6b63\u5728\u51c6\u5907\u7684\u4e0b\u4e00\u9996\u4e0d\u4f1a\u88ab\u6253\u65ad\u3002");
     perfLog("right-control:like-click", startedAt);
     void runLikeInBackground();
   }
@@ -716,7 +759,7 @@ export default function Home() {
     try {
       await sendFeedback("like_style");
     } catch {
-      setFeedbackStatus("反馈提交失败，请稍后再试。");
+      setFeedbackStatus("\u53cd\u9988\u63d0\u4ea4\u5931\u8d25\uff0c\u8bf7\u7a0d\u540e\u518d\u8bd5\u3002");
     } finally {
       setFeedbackPending(false);
     }
@@ -774,6 +817,7 @@ export default function Home() {
     debugLog("[audio] stop song");
     if (!audio) return;
     cancelSongFades();
+    resetSongWebAudioGain();
     audio.pause();
     audio.currentTime = 0;
     songLocalVolumeRef.current = AUDIO_VOLUME.songNormal;
@@ -905,7 +949,7 @@ export default function Home() {
 
       if (!response.ok || isRecommendationFailure(data)) {
         const failure = isRecommendationFailure(data) ? data : null;
-        throw new Error(failure?.message ?? "无法获取下一首。请检查 Last.fm 和音乐 API 配置。");
+        throw new Error(failure?.message ?? "\u65e0\u6cd5\u83b7\u53d6\u4e0b\u4e00\u9996\u3002\u8bf7\u68c0\u67e5 Last.fm \u548c\u97f3\u4e50 API \u914d\u7f6e\u3002");
       }
 
       return data as RadioNextResponse;
@@ -926,7 +970,7 @@ export default function Home() {
         body: JSON.stringify({ action, item })
       }, FEEDBACK_TIMEOUT_MS);
 
-      if (!response.ok) throw new Error("反馈提交失败");
+      if (!response.ok) throw new Error("鍙嶉鎻愪氦澶辫触");
     } finally {
       perfLog(`/api/feedback:${action}`, startedAt);
     }
@@ -977,6 +1021,42 @@ export default function Home() {
       setPlaylistImportStatus(message);
     } finally {
       setPlaylistImportPending(false);
+    }
+  }
+
+  async function submitSongRequest(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
+    const text = requestSongText.trim();
+    if (!text || requestSongPending) return;
+    setRequestSongPending(true);
+    setRequestSongStatus("loading");
+    try {
+      const response = await fetchWithTimeout("/api/request-song", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text })
+      }, REQUEST_SONG_TIMEOUT_MS);
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.message ?? "request_song_failed");
+      setRequestSongText("");
+      setRequestSongStatus("success");
+      setPrepareStatus((current) => current === "ready" ? current : "preparing");
+    } catch (cause) {
+      setRequestSongStatus("error");
+    } finally {
+      setRequestSongPending(false);
+    }
+  }
+  async function requestLocalUpdate() {
+    if (updateStatus === "running") return;
+    setUpdateStatus("running");
+    try {
+      const response = await fetch("/api/system/update", { method: "POST" });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.ok) throw new Error(data.error ?? "update_failed");
+      setUpdateStatus("success");
+    } catch {
+      setUpdateStatus("error");
     }
   }
 
@@ -1094,13 +1174,22 @@ export default function Home() {
     cancelSongFades();
     songFadeOutStartedRef.current = false;
     fadeTrackIdRef.current = currentRef.current?.track.id ?? speakingForRef.current?.track.id ?? null;
-    songLocalVolumeRef.current = options.fadeIn ? 0 : AUDIO_VOLUME.songNormal;
+    const fadeInDurationMs = options.fadeInDurationMs ?? AUDIO_TRANSITION.nextSongFadeInSec * 1000;
+    const shouldUseFrameFadeIn = Boolean(options.fadeIn && !document.hidden);
+    const webAudioFadeStarted = Boolean(options.fadeIn && document.hidden && await startSongWebAudioFadeIn(fadeInDurationMs));
+    if (options.fadeIn && document.hidden && webAudioFadeStarted) {
+      debugLog("[audio] page hidden, using Web Audio song fade in");
+      void logClientRuntimeEvent("audio.fadeIn", "info", { reason: "hidden_page_web_audio", track: currentRef.current?.track.title ?? speakingForRef.current?.track.title ?? null });
+    }
+    if (!webAudioFadeStarted) resetSongWebAudioGain();
+    songLocalVolumeRef.current = shouldUseFrameFadeIn ? 0 : AUDIO_VOLUME.songNormal;
     applySongVolume();
     audio.src = audioUrl;
     audio.load();
     await playAudioElement(audio);
+    applySongVolume();
     triggerImmediateNextPreparation("song_audio_playing");
-    if (options.fadeIn) {
+    if (shouldUseFrameFadeIn) {
       const controller = new AbortController();
       songFadeInAbortRef.current = controller;
       debugLog("[audio] song fade in started");
@@ -1108,7 +1197,7 @@ export default function Home() {
         audio,
         from: songLocalVolumeRef.current,
         to: AUDIO_VOLUME.songNormal,
-        durationMs: options.fadeInDurationMs ?? AUDIO_TRANSITION.nextSongFadeInSec * 1000,
+        durationMs: fadeInDurationMs,
         signal: controller.signal,
         onFrame: (volume) => {
           songLocalVolumeRef.current = volume;
@@ -1126,6 +1215,57 @@ export default function Home() {
       if (songFadeInAbortRef.current === controller) songFadeInAbortRef.current = null;
       debugLog("[audio] song fade in complete");
     }
+  }
+
+  async function startSongWebAudioFadeIn(durationMs: number, fromGain = 0.0001) {
+    const audio = songAudioRef.current;
+    if (!audio || typeof window === "undefined") return false;
+    const AudioContextCtor = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextCtor) return false;
+
+    try {
+      const context = songAudioContextRef.current ?? new AudioContextCtor();
+      songAudioContextRef.current = context;
+      if (context.state === "suspended") await context.resume();
+      if (!songGainNodeRef.current || !songMediaSourceRef.current) {
+        const source = context.createMediaElementSource(audio);
+        const gain = context.createGain();
+        source.connect(gain);
+        gain.connect(context.destination);
+        songMediaSourceRef.current = source;
+        songGainNodeRef.current = gain;
+      }
+
+      const gain = songGainNodeRef.current;
+      const now = context.currentTime;
+      const durationSec = Math.max(AUDIO_TRANSITION.minFadeInMs, durationMs) / 1000;
+      if (songWebAudioFadeTimerRef.current) window.clearTimeout(songWebAudioFadeTimerRef.current);
+      gain.gain.cancelScheduledValues(now);
+      gain.gain.setValueAtTime(Math.max(0.0001, Math.min(1, fromGain)), now);
+      gain.gain.exponentialRampToValueAtTime(1, now + durationSec);
+      songWebAudioFadeTimerRef.current = window.setTimeout(() => {
+        resetSongWebAudioGain();
+        debugLog("[audio] Web Audio song fade in complete");
+      }, durationSec * 1000 + 100);
+      return true;
+    } catch (cause) {
+      debugLog("[audio] Web Audio fade in unavailable", cause);
+      void logClientRuntimeEvent("audio.fadeIn", "error", { reason: "web_audio_unavailable", error: cause instanceof Error ? cause.message : String(cause) });
+      return false;
+    }
+  }
+
+  function resetSongWebAudioGain() {
+    const gain = songGainNodeRef.current;
+    const context = songAudioContextRef.current;
+    if (songWebAudioFadeTimerRef.current) {
+      window.clearTimeout(songWebAudioFadeTimerRef.current);
+      songWebAudioFadeTimerRef.current = null;
+    }
+    if (!gain || !context) return;
+    const now = context.currentTime;
+    gain.gain.cancelScheduledValues(now);
+    gain.gain.setValueAtTime(1, now);
   }
 
   function playAudioElement(audio: HTMLAudioElement) {
@@ -1398,13 +1538,24 @@ export default function Home() {
 
   function stabilizeSongAudioForBackground() {
     const audio = songAudioRef.current;
-    if (!audio || activeAudioTypeRef.current !== "song") return;
+    if (!audio || !audio.src || playerStateRef.current === "paused") return;
     if (songFadeInAbortRef.current && songLocalVolumeRef.current < AUDIO_VOLUME.songNormal) {
-      debugLog("[audio] page hidden during song fade in, completing fade immediately");
-      songLocalVolumeRef.current = AUDIO_VOLUME.songNormal;
-      applySongVolume();
+      const currentFadeProgress = Math.max(0.0001, Math.min(1, songLocalVolumeRef.current / AUDIO_VOLUME.songNormal));
+      const remainingFadeMs = Math.max(AUDIO_TRANSITION.minFadeInMs, AUDIO_TRANSITION.nextSongFadeInSec * 1000 * (1 - currentFadeProgress));
+      debugLog("[audio] page hidden during song fade in, handing off to Web Audio", currentFadeProgress);
       songFadeInAbortRef.current.abort();
       songFadeInAbortRef.current = null;
+      songLocalVolumeRef.current = AUDIO_VOLUME.songNormal;
+      applySongVolume();
+      void startSongWebAudioFadeIn(remainingFadeMs, currentFadeProgress);
+      void logClientRuntimeEvent("audio.fadeIn", "info", { reason: "visibility_hidden_web_audio_handoff", track: currentRef.current?.track.title ?? speakingForRef.current?.track.title ?? null });
+      return;
+    }
+    if (activeAudioTypeRef.current === "song" && !audio.paused && songLocalVolumeRef.current <= 0 && !isMutedRef.current) {
+      debugLog("[audio] hidden page song volume was zero, restoring normal volume");
+      songLocalVolumeRef.current = AUDIO_VOLUME.songNormal;
+      applySongVolume();
+      void logClientRuntimeEvent("audio.volume", "info", { reason: "hidden_page_restore_zero_song_volume", track: currentRef.current?.track.title ?? null });
     }
   }
 
@@ -1460,8 +1611,8 @@ export default function Home() {
   }
 
   function handleError(cause: unknown, prefix = "") {
-    const rawMessage = cause instanceof Error ? cause.message : "未知错误";
-    const message = rawMessage.includes("aborted") || rawMessage.includes("AbortError") ? "请求超时或被取消，请稍后重试。" : rawMessage;
+    const rawMessage = cause instanceof Error ? cause.message : "鏈煡閿欒";
+    const message = rawMessage.includes("aborted") || rawMessage.includes("AbortError") ? "\u8bf7\u6c42\u8d85\u65f6\u6216\u88ab\u53d6\u6d88\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002" : rawMessage;
     setError(`${prefix}${message}`.trim());
     setState("error");
   }
@@ -1505,6 +1656,7 @@ export default function Home() {
   const serverOnline = localServiceStatus?.server.ok ?? true;
   const ttsOnline = localServiceStatus?.tts.ok ?? false;
   const logoSrc = theme === "ivory" ? "/api/assets/logo?theme=ivory&v=white-20260514" : "/api/assets/logo?v=svg-20260514";
+  const searchIconSrc = theme === "ivory" ? "/api/assets/icon/search?v=20260520" : "/api/assets/icon/search-white?v=20260520";
 
   return (
     <main className="shell your-radio-page" data-theme={theme} style={backgroundStyle}>
@@ -1519,14 +1671,36 @@ export default function Home() {
             <h1 className="title"><img className="brand-logo" src={logoSrc} alt="YourRadio" /></h1>
           </div>
           <div className="top-status-cluster" aria-label="Local service status">
-            <div className="service-pill" data-online={serverOnline}>
-              <span className="service-dot" />
-              <span>Server</span>
-            </div>
-            <div className="service-pill" data-online={ttsOnline} title={localServiceStatus?.tts.error ?? ""}>
-              <span className="service-dot" />
-              <span>TTS</span>
-            </div>
+            <form className="request-song-form" data-open={isRequestSongOpen} onSubmit={(event) => void submitSongRequest(event)}>
+              {isRequestSongOpen ? (
+                <div className="request-song-row">
+                  <input
+                    id="request-song-input"
+                    className="request-song-input"
+                    value={requestSongText}
+                    disabled={requestSongPending}
+                    onChange={(event) => setRequestSongText(event.target.value)}
+                    placeholder={"\u6bd4\u5982\u8bf4\"Maroon5-this love\""}
+                    aria-label={"\u641c\u7d22\u5e76\u52a0\u5165\u60f3\u542c\u7684\u6b4c"}
+                    autoFocus
+                  />
+                  <button className="request-song-icon-button" type="submit" data-status={requestSongStatus} disabled={requestSongPending || !requestSongText.trim()} aria-label={requestSongPending ? "\u67e5\u627e\u4e2d" : "\u52a0\u5165\u961f\u5217"}>
+                    {requestSongStatus === "loading" ? (
+                      <span className="request-song-spinner" aria-hidden="true" />
+                    ) : requestSongStatus === "success" ? (
+                      <span className="request-song-check" aria-hidden="true" />
+                    ) : (
+                      <img className="request-song-icon" src={searchIconSrc} alt="" aria-hidden="true" />
+                    )}
+                  </button>
+                </div>
+              ) : (
+                <button className="request-song-collapsed" type="button" onClick={() => setIsRequestSongOpen(true)} aria-label={"\u6253\u5f00\u70b9\u6b4c\u641c\u7d22"}>
+                  <img className="request-song-icon" src={searchIconSrc} alt="" aria-hidden="true" />
+                  <span>{"\u60f3\u542c\u4ec0\u4e48\uff1f"}</span>
+                </button>
+              )}
+            </form>
             <button className="theme-toggle-button" type="button" onClick={toggleTheme} aria-label={"\u5207\u6362\u64ad\u653e\u5668\u989c\u8272"} data-theme-value={theme}>
               <span className="theme-switch-option" data-active={theme === "dark"}>{"\u6df1\u8272"}</span>
               <span className="theme-switch-option" data-active={theme === "ivory"}>{"\u7c73\u8272"}</span>
@@ -1538,6 +1712,14 @@ export default function Home() {
         <section className="studio">
           <article className="panel main-panel">
             <div className="player-card">
+              <div className="player-service-lights" aria-label="Local service status">
+                <div className="service-pill service-light-only" data-online={serverOnline} title={serverOnline ? "Server online" : "Server offline"} aria-label={serverOnline ? "Server online" : "Server offline"}>
+                  <span className="service-dot" />
+                </div>
+                <div className="service-pill service-light-only" data-online={ttsOnline} title={ttsOnline ? "TTS online" : localServiceStatus?.tts.error ?? "TTS offline"} aria-label={ttsOnline ? "TTS online" : "TTS offline"}>
+                  <span className="service-dot" />
+                </div>
+              </div>
               <div className="cover-wrap fade-in" key={artworkKey}>
                 {displayTrack?.coverUrl ? <img src={displayTrack.coverUrl} alt="" className="cover" /> : <div className="cover placeholder-cover" aria-hidden="true" />}
               </div>
@@ -1578,7 +1760,7 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="script">{displayItem?.djLine ?? "点击开始电台后，这里会显示 AI 主播串场文案。"}</div>
+            <div className="script">{displayItem?.djLine ?? "\u70b9\u51fb\u5f00\u59cb\u7535\u53f0\u540e\uff0c\u8fd9\u91cc\u4f1a\u663e\u793a AI \u4e3b\u64ad\u4e32\u573a\u6587\u6848\u3002"}</div>
 
             <audio ref={songAudioRef} className="hidden-audio" onTimeUpdate={handleSongTimeUpdate} onLoadedMetadata={handleSongTimeUpdate} onEnded={() => void handleSongEnded()} />
             <audio ref={speechAudioRef} className="hidden-audio" />
@@ -1588,12 +1770,12 @@ export default function Home() {
             {error ? <div className="error">{error}</div> : null}
             <div className="controls-below">
               <div className="actions">
-                <button className="button primary" disabled={playerState !== "idle" && playerState !== "stopped" && playerState !== "error"} onClick={startRadio}>开始电台</button>
-                <button className="button" disabled={!canControl} onClick={() => void pauseOrResumeRadio()}>{isPaused ? "继续电台" : "暂停电台"}</button>
-                <button className="button" disabled={feedbackDisabled} onClick={() => void neutralNext()}>换一首（不降权）</button>
-                <button className="button danger" disabled={feedbackDisabled} onClick={() => void skipAndReduce()}>跳过并减少推荐</button>
-                <button className="button" disabled={feedbackDisabled} onClick={() => void likeCurrentStyle()}>喜欢这种风格</button>
-                <button className="button primary" disabled={!canControl} onClick={() => void stopRadio()}>停止电台</button>
+                <button className="button primary" disabled={playerState !== "idle" && playerState !== "stopped" && playerState !== "error"} onClick={startRadio}>{"\u5f00\u59cb\u7535\u53f0"}</button>
+                <button className="button" disabled={!canControl} onClick={() => void pauseOrResumeRadio()}>{isPaused ? "\u7ee7\u7eed\u7535\u53f0" : "\u6682\u505c\u7535\u53f0"}</button>
+                <button className="button" disabled={feedbackDisabled} onClick={() => void neutralNext()}>{"\u6362\u4e00\u9996\uff08\u4e0d\u964d\u6743\uff09"}</button>
+                <button className="button danger" disabled={feedbackDisabled} onClick={() => void skipAndReduce()}>{"\u8df3\u8fc7\u5e76\u51cf\u5c11\u63a8\u8350"}</button>
+                <button className="button" disabled={feedbackDisabled} onClick={() => void likeCurrentStyle()}>{"\u559c\u6b22\u8fd9\u79cd\u98ce\u683c"}</button>
+                <button className="button primary" disabled={!canControl} onClick={() => void stopRadio()}>{"\u505c\u6b62\u7535\u53f0"}</button>
               </div>
 
               {feedbackStatus ? <p className="feedback">{feedbackStatus}</p> : null}
@@ -1667,9 +1849,25 @@ export default function Home() {
           {playlistImportStatus ? <p className="feedback playlist-import-status">{playlistImportStatus}</p> : null}
         </section>
       </div>
+      <div className="corner-tools" data-open={isToolMenuOpen}>
+        {isToolMenuOpen ? (
+          <div className="corner-tools-menu">
+            <a className="corner-tool-item" href="https://github.com/jayceto946-byte" target="_blank" rel="noreferrer">GitHub 主页</a>
+            <button className="corner-tool-item" type="button" onClick={() => void requestLocalUpdate()} disabled={updateStatus === "running"}>
+              {updateStatus === "running" ? "更新中" : updateStatus === "success" ? "已开始更新" : updateStatus === "error" ? "更新失败" : "一键更新"}
+            </button>
+          </div>
+        ) : null}
+        <button className="corner-tool-button" type="button" onClick={() => setIsToolMenuOpen((current) => !current)} aria-label="打开工具菜单">
+          <span aria-hidden="true">•••</span>
+        </button>
+      </div>
     </main>
   );
 }
+
+
+
 
 
 

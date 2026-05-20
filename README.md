@@ -25,8 +25,8 @@ Windows 本地个人 AI 电台。前端使用 Next.js + TypeScript，播放源�
    如果你需要先从音乐平台导出自己的歌单，可以使用开源项目 **Go Music** 获取原始歌单，再导入到 YourRadio：  
    `https://music.unmeta.cn/`
 
-5. **可播放音源**  
-   项目不内置、也不分发任何音源。请自行准备可用的音乐 API 或播放源，并按环境变量配置接入；Last.fm 只提供音乐信息，不提供最终播放链接。
+4. **可播放音源**  
+   项目不内置、也不分发任何音源。默认配置使用公开测试音乐 API：`https://music-api.gdstudio.xyz/api.php`；Last.fm 只提供音乐信息，不提供最终播放链接。
 
 ## 运行
 
@@ -52,9 +52,9 @@ npm run dev:clean
 在 `.env.local` 中配置：
 
 ```env
-MUSIC_API_BASE_URL=https://your-music-api.example.com/api.php
-MUSIC_PROVIDER_ORDER=netease,spotify,apple
-MUSIC_BITRATE=320
+MUSIC_API_BASE_URL=https://music-api.gdstudio.xyz/api.php
+MUSIC_PROVIDER_ORDER=netease,spotify,tencent,apple
+MUSIC_BITRATE=999
 LASTFM_API_KEY=your_lastfm_api_key_here
 LLM_PROVIDER=openai_compatible
 LLM_API_URL=https://api.example.com/v1/chat/completions
@@ -62,11 +62,23 @@ LLM_API_KEY=your_llm_api_key_here
 LLM_MODEL=your_model_name_here
 ```
 
+默认音乐 API 使用公开测试接口 `https://music-api.gdstudio.xyz/api.php`。音源 URL 的格式为：
+
+```text
+https://music-api.gdstudio.xyz/api.php?types=url&source=[MUSIC SOURCE]&id=[TRACK ID]&br=[128/192/320/740/999]
+```
+
+感谢音源 API 原作者：B站 @GD-Studio。
+
+如果你有自己的兼容 API，也可以把 `MUSIC_API_BASE_URL` 改成自己的地址。
+
 `LLM_PROVIDER=openai_compatible` 适用于支持 OpenAI 风格 `/chat/completions` 的服务。若你仍使用 DeepSeek，并希望保留其专用请求参数，可改为 `LLM_PROVIDER=deepseek`。旧的 `DEEPSEEK_*` 环境变量仍会被兼容读取，但新配置优先。
 
 Last.fm 只作为音乐信息 Provider，不提供播放 URL。最终播放仍必须经过 `MUSIC_PROVIDER_ORDER` 中的音乐 API 匹配并确认有 `audioUrl`。
 
-`MUSIC_API_BASE_URL` 用于配置你自己的音乐 API 地址。当前接入层期望该 API 支持 `types=search`、`types=url` 和 `types=pic` 这类查询参数。
+`MUSIC_API_BASE_URL` 默认指向公开测试音乐 API。当前接入层期望该 API 支持 `types=search`、`types=url` 和 `types=pic` 这类查询参数；如果你有自己的兼容 API，也可以替换这个地址。
+
+如果已选歌曲的音源结果没有封面，项目可以用 `MUSIC_COVER_FALLBACK_PROVIDER=kuwo` 做一次高置信的封面补全；它只补元数据，不会改变实际播放音源。
 
 ## 导入基础歌单
 

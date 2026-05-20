@@ -22,11 +22,13 @@ export type SongResearchResult = {
   usedProviders: string[];
   searched: boolean;
   wikiSearched: boolean;
+  lastfmSearched?: boolean;
   cached: boolean;
   latencyMs: number;
   popularityScore?: number;
   queries?: string[];
   wikiQueries?: string[];
+  lastfmQueries?: string[];
   triggerReasons?: string[];
   errors: string[];
   researchStatus?: "skipped" | "running" | "success" | "fallback" | "timeout";

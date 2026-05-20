@@ -10,7 +10,8 @@ $ErrorActionPreference = "Stop"
 $resolvedProjectRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
 
 Write-Host "Stopping existing YourRadio dev server..." -ForegroundColor Cyan
-& (Join-Path $resolvedProjectRoot "scripts\stop-yourradio.ps1") -Ports @(3000, 3100) -ProjectRoot $resolvedProjectRoot
+$stopRadioScript = Join-Path $resolvedProjectRoot "scripts\stop-yourradio.ps1"
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $stopRadioScript -Ports 3000 3100 -ProjectRoot $resolvedProjectRoot
 
 if (-not $SkipClean) {
   $nextDir = Join-Path $resolvedProjectRoot ".next"

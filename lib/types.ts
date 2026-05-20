@@ -63,7 +63,7 @@ export type RadioTrack = {
   audioUrl: string;
 };
 
-export type SearchStrategy = "exact" | "tasteExpansion" | "adjacentExpansion" | "discovery" | "exploration";
+export type SearchStrategy = "exact" | "tasteExpansion" | "adjacentExpansion" | "discovery" | "exploration" | "requested";
 
 export type SourceSeed = {
   title: string;
